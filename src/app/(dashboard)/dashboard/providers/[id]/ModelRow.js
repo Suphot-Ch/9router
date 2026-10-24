@@ -1,17 +1,30 @@
 import PropTypes from "prop-types";
 import { CapacityBadges } from "@/shared/components";
 
+function formatLatency(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return null;
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
 export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix }) {
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
-  const borderColor = testStatus === "ok"
+  // testStatus is either a legacy "ok" | "error" string or a health-check
+  // result object { ok, latencyMs, error }.
+  const statusOk = testStatus === "ok" || testStatus?.ok === true;
+  const statusError = testStatus === "error" || testStatus?.ok === false;
+  const latencyLabel = typeof testStatus === "object" && testStatus !== null
+    ? formatLatency(testStatus.latencyMs)
+    : null;
+  const statusTitle = typeof testStatus === "object" && testStatus?.error ? testStatus.error : null;
+  const borderColor = statusOk
     ? "border-green-500/40"
-    : testStatus === "error"
+    : statusError
     ? "border-red-500/40"
     : "border-border";
 
-  const iconColor = testStatus === "ok"
+  const iconColor = statusOk
     ? "#22c55e"
-    : testStatus === "error"
+    : statusError
     ? "#ef4444"
     : undefined;
 
@@ -21,13 +34,22 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
         <span
           className="material-symbols-outlined shrink-0 text-base mt-0.5 sm:mt-0"
           style={iconColor ? { color: iconColor } : undefined}
+          title={statusTitle || undefined}
         >
-          {testStatus === "ok" ? "check_circle" : testStatus === "error" ? "cancel" : "smart_toy"}
+          {statusOk ? "check_circle" : statusError ? "cancel" : "smart_toy"}
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <code className="w-fit max-w-full break-all rounded bg-sidebar px-1.5 py-0.5 font-mono text-xs text-text-muted sm:max-w-[360px] sm:truncate">{displayModel}</code>
           <span className="flex min-w-0 items-center text-[9px] gap-1 pl-1">
             {model.name && <span className="break-all sm:truncate text-[9px] italic text-text-muted/70">{model.name}</span>}
+            {latencyLabel && (
+              <span
+                className={`shrink-0 rounded px-1 tabular-nums ${statusOk ? "bg-green-500/10 text-green-600 dark:text-green-400" : "bg-red-500/10 text-red-500"}`}
+                title={statusTitle || `Last health check: ${latencyLabel}`}
+              >
+                {latencyLabel}
+              </span>
+            )}
             <CapacityBadges caps={caps} colorOverride="text-text-muted/70" size={12} />
           </span>
         </div>
@@ -92,7 +114,14 @@ ModelRow.propTypes = {
   alias: PropTypes.string,
   copied: PropTypes.string,
   onCopy: PropTypes.func.isRequired,
-  testStatus: PropTypes.oneOf(["ok", "error"]),
+  testStatus: PropTypes.oneOfType([
+    PropTypes.oneOf(["ok", "error"]),
+    PropTypes.shape({
+      ok: PropTypes.bool,
+      latencyMs: PropTypes.number,
+      error: PropTypes.string,
+    }),
+  ]),
   isCustom: PropTypes.bool,
   isFree: PropTypes.bool,
   onDeleteAlias: PropTypes.func,

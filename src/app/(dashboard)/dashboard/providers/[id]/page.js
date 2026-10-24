@@ -15,6 +15,8 @@ import { translate } from "@/i18n/runtime";
 import { fetchSuggestedModels } from "@/shared/utils/providerModelsFetcher";
 import { getProviderCustomModelRows } from "@/shared/utils/providerCustomModels";
 import ModelRow from "./ModelRow";
+import HealthCheckModal from "./HealthCheckModal";
+import { HEALTH_CHECK_CONCURRENCY, mapWithConcurrency, nowMs } from "./healthCheckUtils";
 import PassthroughModelsSection from "./PassthroughModelsSection";
 import CompatibleModelsSection from "./CompatibleModelsSection";
 import ConnectionRow from "./ConnectionRow";
@@ -64,6 +66,12 @@ export default function ProviderDetailPage() {
   const [modelTestResults, setModelTestResults] = useState({});
   const [modelsTestError, setModelsTestError] = useState("");
   const [testingModelIds, setTestingModelIds] = useState(() => new Set());
+  const [healthModalOpen, setHealthModalOpen] = useState(false);
+  const [healthRunning, setHealthRunning] = useState(false);
+  const [healthProgress, setHealthProgress] = useState({ done: 0, total: 0 });
+  const [healthResults, setHealthResults] = useState([]);
+  const [healthFinishedAt, setHealthFinishedAt] = useState(null);
+  const stopHealthCheckRef = useRef(false);
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [selectedConnectionIds, setSelectedConnectionIds] = useState([]);
   const [bulkProxyPoolId, setBulkProxyPoolId] = useState("__none__");
@@ -1138,9 +1146,117 @@ export default function ProviderDetailPage() {
     </Modal>
   );
 
+  // ---- Model health check -------------------------------------------------
+  // Collect the models that are actually routable right now: built-in + kilo
+  // free + custom rows, minus disabled ids, deduped by model id.
+  const collectHealthTargets = () => {
+    const disabled = new Set(disabledModelIds);
+    const seen = new Set();
+    const targets = [];
+    const push = (id, name) => {
+      if (!id || disabled.has(id) || seen.has(id)) return;
+      seen.add(id);
+      targets.push({ id, name: name || id, kind: "llm" });
+    };
+
+    for (const model of [...models, ...kiloFreeModels.filter((fm) => !models.some((m) => m.id === fm.id))]) {
+      const kind = getModelKind(model);
+      if (kind && kind !== "llm") continue;
+      push(model.id, model.name);
+    }
+
+    for (const row of getProviderCustomModelRows({
+      customModels,
+      modelAliases,
+      providerAlias: providerStorageAlias,
+      builtInModels: models,
+      type: "llm",
+    })) {
+      push(row.id, row.name);
+    }
+
+    return targets;
+  };
+
+  // Runs a real ping per model through /api/models/test with a small
+  // concurrency cap so large providers do not hammer their upstream at once.
+  const handleHealthCheck = async (onlyIds = null) => {
+    if (healthRunning) return;
+    const targets = collectHealthTargets().filter((t) => !onlyIds || onlyIds.includes(t.id));
+    if (targets.length === 0) return;
+
+    stopHealthCheckRef.current = false;
+    setHealthModalOpen(true);
+    setHealthRunning(true);
+    setHealthFinishedAt(null);
+    setModelsTestError("");
+    setHealthProgress({ done: 0, total: targets.length });
+    setHealthResults(targets.map((t) => ({
+      modelId: t.id, name: t.name, pending: true, ok: false, latencyMs: null, error: null,
+    })));
+
+    let completed = 0;
+
+    const runOne = async (target, index) => {
+      const startedAt = nowMs();
+      setTestingModelIds((prev) => new Set(prev).add(target.id));
+      let entry;
+      try {
+        const res = await fetch("/api/models/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: `${providerStorageAlias}/${target.id}`, kind: target.kind }),
+        });
+        const data = await res.json().catch(() => ({}));
+        entry = {
+          ok: data.ok === true,
+          latencyMs: typeof data.latencyMs === "number" ? data.latencyMs : nowMs() - startedAt,
+          error: data.ok ? null : (data.error || `HTTP ${res.status}`),
+        };
+      } catch {
+        entry = { ok: false, latencyMs: nowMs() - startedAt, error: "Network error" };
+      } finally {
+        setTestingModelIds((prev) => {
+          const next = new Set(prev);
+          next.delete(target.id);
+          return next;
+        });
+      }
+
+      setModelTestResults((prev) => ({ ...prev, [target.id]: entry }));
+      setHealthResults((prev) => {
+        const next = [...prev];
+        next[index] = { modelId: target.id, name: target.name, ...entry };
+        return next;
+      });
+      completed += 1;
+      setHealthProgress({ done: completed, total: targets.length });
+    };
+
+    try {
+      await mapWithConcurrency(
+        targets,
+        HEALTH_CHECK_CONCURRENCY,
+        runOne,
+        () => stopHealthCheckRef.current
+      );
+    } finally {
+      setHealthRunning(false);
+      setHealthFinishedAt(nowMs());
+      setHealthResults((prev) => prev.map((row) => (
+        row.pending ? { ...row, pending: false, ok: false, error: "Skipped (stopped)" } : row
+      )));
+    }
+  };
+
+  const handleStopHealthCheck = useCallback(() => {
+    stopHealthCheckRef.current = true;
+  }, []);
+
   const handleTestModel = async (modelId) => {
     if (testingModelIds.has(modelId)) return;
     setTestingModelIds((prev) => new Set(prev).add(modelId));
+    const startedAt = nowMs();
     try {
       const res = await fetch("/api/models/test", {
         method: "POST",
@@ -1148,10 +1264,17 @@ export default function ProviderDetailPage() {
         body: JSON.stringify({ model: `${providerStorageAlias}/${modelId}` }),
       });
       const data = await res.json();
-      setModelTestResults((prev) => ({ ...prev, [modelId]: data.ok ? "ok" : "error" }));
+      setModelTestResults((prev) => ({
+        ...prev,
+        [modelId]: {
+          ok: data.ok === true,
+          latencyMs: typeof data.latencyMs === "number" ? data.latencyMs : nowMs() - startedAt,
+          error: data.ok ? null : (data.error || "Model not reachable"),
+        },
+      }));
       setModelsTestError(data.ok ? "" : (data.error || "Model not reachable"));
     } catch {
-      setModelTestResults((prev) => ({ ...prev, [modelId]: "error" }));
+      setModelTestResults((prev) => ({ ...prev, [modelId]: { ok: false, latencyMs: nowMs() - startedAt, error: "Network error" } }));
       setModelsTestError("Network error");
     } finally {
       setTestingModelIds((prev) => { const n = new Set(prev); n.delete(modelId); return n; });
@@ -1785,6 +1908,20 @@ export default function ProviderDetailPage() {
             const activeIds = allIds.filter((id) => !disabledModelIds.includes(id));
             return (
               <div className="flex gap-2">
+                {(connections.length > 0 || isFreeNoAuth) && allIds.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon="monitor_heart"
+                    loading={healthRunning}
+                    onClick={() => handleHealthCheck()}
+                    title="Ping every active model and report latency/errors"
+                  >
+                    {healthRunning
+                      ? `Checking ${healthProgress.done}/${healthProgress.total}`
+                      : "Health Check"}
+                  </Button>
+                )}
                 {disabledModelIds.length > 0 && (
                   <Button size="sm" variant="secondary" icon="restart_alt" onClick={handleEnableAll}>
                     Active All
@@ -1833,6 +1970,19 @@ export default function ProviderDetailPage() {
         )}
         {renderModelsSection()}
       </Card>
+
+      <HealthCheckModal
+        isOpen={healthModalOpen}
+        onClose={() => setHealthModalOpen(false)}
+        providerLabel={providerInfo?.name || providerId}
+        running={healthRunning}
+        progress={healthProgress}
+        results={healthResults}
+        finishedAt={healthFinishedAt}
+        onStop={handleStopHealthCheck}
+        onRerunAll={() => handleHealthCheck()}
+        onRerunFailed={(ids) => handleHealthCheck(ids)}
+      />
 
       {bulkActionModal}
 
