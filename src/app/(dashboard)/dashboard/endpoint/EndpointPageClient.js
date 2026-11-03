@@ -19,13 +19,22 @@ import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
+import KeyLimitsSummary from "./components/KeyLimitsSummary";
+import KeyLimitsModal from "./components/KeyLimitsModal";
+import KeyLimitsFields, { EMPTY_LIMITS } from "./components/KeyLimitsFields";
+import { buildCreateKeyPayload } from "@/shared/utils/keyLimits";
+
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyLimits, setNewKeyLimits] = useState(EMPTY_LIMITS);
+  const [showNewKeyLimits, setShowNewKeyLimits] = useState(false);
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  // Key whose spending-limits sheet is open (id, so the row stays live after a save).
+  const [limitsKeyId, setLimitsKeyId] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -622,7 +631,8 @@ export default function APIPageClient({ machineId }) {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        // Limits stay optional: when untouched the body is still just { name }.
+        body: JSON.stringify(buildCreateKeyPayload(newKeyName.trim(), newKeyLimits)),
       });
       const data = await res.json();
 
@@ -630,11 +640,19 @@ export default function APIPageClient({ machineId }) {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
+        setNewKeyLimits(EMPTY_LIMITS);
+        setShowNewKeyLimits(false);
         setShowAddModal(false);
       }
     } catch (error) {
       console.log("Error creating key:", error);
     }
+  };
+
+  // Patch a saved key row back into the list — no refetch, no reload.
+  const handleLimitsSaved = (id, updatedKey) => {
+    if (!updatedKey) return;
+    setKeys((prev) => prev.map((k) => (k.id === id ? { ...k, ...updatedKey } : k)));
   };
 
   const handleDeleteKey = async (id) => {
@@ -1068,6 +1086,7 @@ export default function APIPageClient({ machineId }) {
                       }
                     })}
                   />
+                  <KeyLimitsSummary apiKey={key} onEditLimits={() => setLimitsKeyId(key.id)} />
                 </div>
                 <div className="flex items-center gap-2 shrink-0 pt-0.5">
                   <Toggle
@@ -1109,6 +1128,8 @@ export default function APIPageClient({ machineId }) {
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
+          setNewKeyLimits(EMPTY_LIMITS);
+          setShowNewKeyLimits(false);
         }}
       >
         <div className="flex flex-col gap-4">
@@ -1118,6 +1139,33 @@ export default function APIPageClient({ machineId }) {
             onChange={(e) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
           />
+          <div className="border-t border-border-subtle pt-3">
+            <button
+              type="button"
+              onClick={() => setShowNewKeyLimits((open) => !open)}
+              aria-expanded={showNewKeyLimits}
+              aria-controls="new-key-limits-fields"
+              className="flex h-11 w-full items-center justify-between gap-2 rounded-[10px] px-1 text-left text-sm font-medium text-text-main"
+            >
+              <span className="flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[18px] text-text-muted">tune</span>
+                Spending limits
+                <span className="text-xs font-normal text-text-muted">optional</span>
+              </span>
+              <span className="material-symbols-outlined text-[18px] text-text-muted">
+                {showNewKeyLimits ? "expand_less" : "expand_more"}
+              </span>
+            </button>
+            {showNewKeyLimits && (
+              <div id="new-key-limits-fields" className="mt-1 flex flex-col gap-4">
+                <KeyLimitsFields
+                  values={newKeyLimits}
+                  onChange={setNewKeyLimits}
+                  idPrefix="new-key-limits"
+                />
+              </div>
+            )}
+          </div>
           <div className="flex gap-2">
             <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
               Create
@@ -1316,6 +1364,25 @@ export default function APIPageClient({ machineId }) {
           </div>
         </div>
       </Modal>
+
+      {/* Spending limits sheet (bottom sheet on mobile, centred dialog above) */}
+      <KeyLimitsModal
+        isOpen={!!limitsKeyId}
+        apiKey={keys.find((k) => k.id === limitsKeyId) || null}
+        onClose={() => setLimitsKeyId(null)}
+        onSaved={(updatedKey) => handleLimitsSaved(limitsKeyId, updatedKey)}
+        onRequestReset={(run) => {
+          const target = keys.find((k) => k.id === limitsKeyId);
+          setConfirmState({
+            title: "Reset usage",
+            message: `Reset the usage counters for "${target?.name || "this key"}"?\n\nTokens and spend go back to 0 and a new reset window starts now. This cannot be undone.`,
+            onConfirm: async () => {
+              setConfirmState(null);
+              await run();
+            },
+          });
+        }}
+      />
 
       {/* Confirm Modal */}
       <ConfirmModal

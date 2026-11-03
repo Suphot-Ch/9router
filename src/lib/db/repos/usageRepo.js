@@ -309,6 +309,16 @@ export async function saveRequestUsage(entry) {
     if (inserted) {
       pushToRing(entry);
       scheduleStatsEvent("update", 250);
+      // Per-key spending accounting: one atomic UPDATE, gated on the insert
+      // above so a deduped (already-counted) entry cannot double-count.
+      if (entry.apiKey && typeof entry.apiKey === "string") {
+        const totalTokens = promptTokens + completionTokens;
+        const cost = entry.cost || 0;
+        if (totalTokens > 0 || cost > 0) {
+          const { addApiKeyUsage } = await import("./apiKeysRepo.js");
+          await addApiKeyUsage(entry.apiKey.trim(), { tokens: totalTokens, cost });
+        }
+      }
     }
   } catch (e) {
     console.error("Failed to save usage stats:", e);

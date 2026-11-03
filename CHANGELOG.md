@@ -1,3 +1,9 @@
+# v0.5.112-primus3 (2026-11-03)
+
+## Features
+- **API keys**: per-key spending limits in tokens and USD with monthly, weekly or manual reset; usage accumulates from tracked requests, reset happens lazily at the configured boundary, and an exhausted key is refused with HTTP 429 (`key_token_limit` / `key_cost_limit`) before any upstream call.
+- **Providers**: per-connection weekly enable/disable schedule (selected weekdays, start/end time, timezone) applied by a background tick, with a schedule modal and badge on the provider page; removing the schedule returns the account to manual control.
+
 # v0.5.112-primus2 (2026-11-03)
 
 ## Primus upgrade

@@ -6,6 +6,7 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  checkApiKeyQuota,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings } from "@/lib/localDb";
@@ -85,6 +86,14 @@ export async function handleChat(request, clientRawRequest = null) {
       log.warn("AUTH", "Invalid API key (requireApiKey=true)");
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
+  }
+
+  // Per-key spending limits: enforced for a known key even in local mode
+  // (unknown keys keep the behaviour above). Runs before any routing work.
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey);
+  if (quotaDenied) {
+    log.warn("AUTH", `${quotaDenied.error} (key=${log.maskKey(apiKey)})`);
+    return errorResponse(quotaDenied.status, quotaDenied.error, null, quotaDenied.code);
   }
 
   if (!modelStr) {

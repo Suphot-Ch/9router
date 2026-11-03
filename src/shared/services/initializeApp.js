@@ -2,7 +2,7 @@ import os from "os";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { existsSync } from "fs";
-import { cleanupProviderConnections, getSettings, updateSettings, getApiKeys } from "@/lib/localDb";
+import { cleanupProviderConnections, getSettings, updateSettings, getApiKeys, getProviderConnections } from "@/lib/localDb";
 import {
   enableTunnel, enableTailscale,
   isTunnelManuallyDisabled, isTunnelReconnecting, isTailscaleReconnecting,
@@ -113,6 +113,14 @@ async function runHeavyStartup() {
       .catch((e) => console.log("[AutoPing] scheduler start failed:", e.message));
   }
 
+  // Weekly enable/disable windows live on the connections themselves, so the check
+  // is one cheap read; the scheduler module only loads when one is enabled.
+  if (await hasConnectionSchedule()) {
+    import("@/shared/services/connectionSchedules")
+      .then(({ startConnectionSchedules }) => startConnectionSchedules())
+      .catch((e) => console.log("[ConnSchedule] scheduler start failed:", e.message));
+  }
+
   // Proactive OAuth token refresh (e.g. grok-cli ~6h TTL). Module is idempotent
   // and also started from custom-server.js when that entry is used.
   import("@/sse/services/backgroundTokenRefresh.js")
@@ -127,6 +135,16 @@ function hasQuotaAutoPingEnabled(settings) {
     Object.values(config?.connections || {}).some(Boolean)
     || Object.values(config?.schedules || {}).some((schedule) => schedule?.enabled === true)
   ));
+}
+
+// Any account with a switched-on weekly window needs the schedule scheduler.
+async function hasConnectionSchedule() {
+  try {
+    const connections = await getProviderConnections();
+    return connections.some((connection) => connection?.schedule?.enabled === true);
+  } catch {
+    return false;
+  }
 }
 
 async function autoStartMitm(settings) {

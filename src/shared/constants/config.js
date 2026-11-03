@@ -92,6 +92,14 @@ export const QUOTA_AUTOPING_CONFIG = {
   },
 };
 
+// Connection schedules: repeating weekly windows that enable/disable an account.
+export const CONNECTION_SCHEDULE_CONFIG = {
+  tickIntervalMs: 60000,                // scheduler tick
+  defaultTimezone: "Asia/Bangkok",      // server-side default when none is supplied
+  lookaheadDays: 8,                     // longest gap between two weekly windows
+  lookbackDays: 1,                      // a window that started yesterday can still be open
+};
+
 // Re-export from providers.js for backward compatibility
 export {
   FREE_PROVIDERS,

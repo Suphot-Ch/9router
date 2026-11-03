@@ -27,9 +27,11 @@ import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
 import CustomConfigCard from "./CustomConfigCard";
 import AutoPingScheduleModal from "./AutoPingScheduleModal";
+import ConnectionScheduleModal from "./ConnectionScheduleModal";
 import WebLoginButton, { WEB_LOGIN_PROVIDERS } from "../components/WebLoginButton.js";
 import MinimaxLeaseButton from "../components/MinimaxLeaseButton.js";
 import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
+import { formatScheduleSummary, getScheduleBadgeLabel } from "@/shared/services/connectionSchedule";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -85,6 +87,8 @@ export default function ProviderDetailPage() {
   const [thinkingMode, setThinkingMode] = useState("auto");
   const [autoPing, setAutoPing] = useState({ enabled: false, connections: {}, schedules: {} });
   const [scheduleConnection, setScheduleConnection] = useState(null);
+  // Weekly enable/disable window editor (per connection, stored on the row itself).
+  const [connectionScheduleTarget, setConnectionScheduleTarget] = useState(null);
   const [suggestedModels, setSuggestedModels] = useState([]);
   const [liveModels, setLiveModels] = useState([]);
   // Live-catalog fetch warning/error (surfaced for zed only; cursor behavior unchanged).
@@ -1068,6 +1072,14 @@ export default function ProviderDetailPage() {
                   scheduleSummary: getScheduleSlotLabels(autoPing.schedules?.[conn.id]).join(" / "),
                   onConfigure: () => setScheduleConnection(conn),
                 } : null}
+                schedule={{
+                  badge: getScheduleBadgeLabel(conn.schedule),
+                  isActive: conn.schedule?.enabled === true,
+                  tooltip: conn.schedule
+                    ? `${conn.schedule.enabled === true ? "Auto enable" : "Scheduled (off)"}: ${formatScheduleSummary(conn.schedule) || "no window"}. Click to edit.`
+                    : "Enable or disable this account automatically on a weekly window. Click to configure.",
+                  onConfigure: () => setConnectionScheduleTarget(conn),
+                }}
                 onUpdateProxy={async (proxyPoolId) => {
                   try {
                     const res = await fetch(`/api/providers/${conn.id}`, {
@@ -2127,6 +2139,16 @@ export default function ProviderDetailPage() {
           reactive={autoPing.connections[scheduleConnection.id] === true}
           schedule={autoPing.schedules?.[scheduleConnection.id] || null}
           onSave={(result) => handleSaveAutoPing(scheduleConnection.id, result)}
+        />
+      )}
+
+      {connectionScheduleTarget && (
+        <ConnectionScheduleModal
+          isOpen={!!connectionScheduleTarget}
+          onClose={() => setConnectionScheduleTarget(null)}
+          connection={connectionScheduleTarget}
+          schedule={connectionScheduleTarget.schedule || null}
+          onUpdated={fetchConnections}
         />
       )}
 

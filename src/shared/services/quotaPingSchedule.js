@@ -5,13 +5,14 @@
 // 09:30 / 14:30 / 19:30 local time — the overnight gap is what re-aligns the
 // next day back onto the 09:30 anchor, since 24h is not a multiple of 5h.
 
-export function getLocalTimezone() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch {
-    return "UTC";
-  }
-}
+import {
+  getLocalTimezone,
+  isValidTimezone,
+  zonedParts,
+  zonedWallClockToUtcMs,
+} from "./zonedTime.js";
+
+export { getLocalTimezone };
 
 export const PING_SCHEDULE_DEFAULTS = {
   anchor: "09:30",
@@ -25,16 +26,6 @@ export const SLOT_GRACE_MS = 30 * 60 * 1000;
 
 const HOUR_MS = 3600000;
 const DAY_MS = 86400000;
-
-function isValidTimezone(timezone) {
-  if (!timezone || typeof timezone !== "string") return false;
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export function parseAnchor(anchor) {
   const match = /^(\d{1,2}):(\d{2})$/.exec(String(anchor || "").trim());
@@ -68,39 +59,6 @@ export function normalizePingSchedule(raw) {
   );
 
   return { enabled: true, anchor, timezone, windowHours, slotsPerDay };
-}
-
-function zonedParts(utcMs, timezone) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(new Date(utcMs));
-
-  const out = {};
-  for (const part of parts) {
-    if (part.type !== "literal") out[part.type] = Number(part.value);
-  }
-  return out;
-}
-
-function zoneOffsetMs(utcMs, timezone) {
-  const p = zonedParts(utcMs, timezone);
-  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - utcMs;
-}
-
-// Wall-clock time in `timezone` → UTC epoch ms (second pass covers DST shifts).
-function zonedWallClockToUtcMs({ year, month, day, hour, minute }, timezone) {
-  const naive = Date.UTC(year, month - 1, day, hour, minute);
-  const offset = zoneOffsetMs(naive, timezone);
-  const candidate = naive - offset;
-  const refinedOffset = zoneOffsetMs(candidate, timezone);
-  return refinedOffset === offset ? candidate : naive - refinedOffset;
 }
 
 function slotKey(anchorDayMs, timezone, index) {

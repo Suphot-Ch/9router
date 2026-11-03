@@ -380,3 +380,66 @@ export async function isValidApiKey(apiKey) {
   if (!apiKey) return false;
   return await validateApiKey(apiKey);
 }
+
+function formatQuotaNumber(value) {
+  return Number(value).toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+/**
+ * Spending gate for an API key: per-key token and cost limits.
+ *
+ * Applied only to a KNOWN (existing, active) key — that is why an unknown key
+ * keeps today's behaviour: rejected when keys are required, allowed in local
+ * mode. Before comparing, a due lazy reset (resetMode none|monthly|weekly) is
+ * applied so a new period starts with zeroed counters; no cron is involved.
+ *
+ * @param {string|null} apiKey - key presented by the request
+ * @param {boolean} requireApiKey - settings.requireApiKey
+ * @returns {Promise<{error: string, status: number, code: string} | null>} null = allowed
+ */
+export async function checkApiKeyQuota(apiKey, requireApiKey = false) {
+  if (!apiKey) {
+    return requireApiKey
+      ? { error: "Missing API key", status: 401, code: "missing_api_key" }
+      : null;
+  }
+
+  const { getApiKeyByKey, applyDueKeyReset } = await import("@/lib/db/repos/apiKeysRepo.js");
+  let keyRecord = await getApiKeyByKey(apiKey);
+  if (!keyRecord || !keyRecord.isActive) {
+    // Unknown or paused key: unchanged behaviour — 401 only when keys are required.
+    return requireApiKey
+      ? { error: "Invalid API key", status: 401, code: "invalid_api_key" }
+      : null;
+  }
+
+  try {
+    keyRecord = await applyDueKeyReset(keyRecord);
+  } catch (e) {
+    // A failed reset must not bypass the limits: fall through with the totals
+    // that were read, so an exhausted key stays exhausted.
+    log.warn("AUTH", `key quota reset failed: ${e?.message || e}`);
+  }
+
+  const tokenLimit = Number(keyRecord.tokenLimit) || 0;
+  const usedTokens = Number(keyRecord.usedTokens) || 0;
+  if (tokenLimit > 0 && usedTokens >= tokenLimit) {
+    return {
+      error: `Token limit exceeded for this API key (${formatQuotaNumber(usedTokens)} / ${formatQuotaNumber(tokenLimit)} tokens used)`,
+      status: 429,
+      code: "key_token_limit",
+    };
+  }
+
+  const costLimit = Number(keyRecord.costLimit) || 0;
+  const usedCost = Number(keyRecord.usedCost) || 0;
+  if (costLimit > 0 && usedCost >= costLimit) {
+    return {
+      error: `Cost limit exceeded for this API key ($${formatQuotaNumber(usedCost)} / $${formatQuotaNumber(costLimit)} used)`,
+      status: 429,
+      code: "key_cost_limit",
+    };
+  }
+
+  return null;
+}
