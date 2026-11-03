@@ -82,6 +82,13 @@ describe("connection row schedule action", () => {
   it("shows a compact badge when a schedule exists", () => {
     expect(rowSource).toContain("schedule?.badge");
     expect(rowSource).toContain("{schedule.badge}");
+    // The badge carries live state, not just the configured window.
+    expect(rowSource).toContain("schedule.badgeVariant");
+  });
+
+  it("says the account is off because of the schedule, not just disabled", () => {
+    expect(rowSource).toContain('"scheduled off"');
+    expect(rowSource).toContain("schedule?.liveActive === false");
   });
 });
 
@@ -90,7 +97,8 @@ describe("provider page wiring", () => {
     expect(pageSource).toContain("<ConnectionScheduleModal");
     expect(pageSource).toContain("onUpdated={fetchConnections}");
     expect(pageSource).toContain("setConnectionScheduleTarget(conn)");
-    expect(pageSource).toContain("getScheduleBadgeLabel(conn.schedule)");
+    expect(pageSource).toContain("describeConnectionSchedule(conn.schedule, scheduleTick)");
     expect(pageSource).toContain("formatScheduleSummary(conn.schedule)");
+    expect(pageSource).toContain("scheduleTick");
   });
 });

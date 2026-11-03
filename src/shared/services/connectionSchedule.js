@@ -243,6 +243,43 @@ export function getScheduleBadgeLabel(schedule) {
   return `Auto ${formatTimeOfDay(start)}-${formatTimeOfDay(end)}`;
 }
 
+// Local "HH:MM" when the edge lands on the same local day as now, otherwise
+// "Mon 09:00". Keeps the badge short instead of printing a raw timestamp.
+function formatTransitionEdge(iso, timezone, dayLabels, nowMs) {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms) || !Number.isFinite(nowMs)) return null;
+  const edge = zonedParts(ms, timezone);
+  const now = zonedParts(nowMs, timezone);
+  const sameDay = edge.year === now.year && edge.month === now.month && edge.day === now.day;
+  const clock = `${String(edge.hour).padStart(2, "0")}:${String(edge.minute).padStart(2, "0")}`;
+  if (sameDay) return clock;
+  const weekday = civilWeekday(edge);
+  return `${dayLabels[weekday] || ""} ${clock}`.trim();
+}
+
+/**
+ * Live state of an enabled schedule for the UI.
+ * Returns null when nothing is automated (absent/disabled/invalid), otherwise
+ *   { active, nextChangeAt, stateLabel }  // "on · until 16:15" / "off · resumes Mon 09:00"
+ * so the dashboard can say *why* an account is disabled instead of showing a
+ * bare toggle.
+ */
+export function describeConnectionSchedule(schedule, nowMs = Date.now(), { dayLabels = CONNECTION_SCHEDULE_DAY_LABELS } = {}) {
+  const evaluation = evaluateConnectionSchedule(schedule, nowMs);
+  if (!evaluation) return null;
+  const normalized = normalizeConnectionSchedule(schedule);
+  if (!normalized) return null;
+
+  const edge = evaluation.nextChangeAt
+    ? formatTransitionEdge(evaluation.nextChangeAt, normalized.timezone, dayLabels, nowMs)
+    : null;
+  const stateLabel = evaluation.active
+    ? (edge ? `on · until ${edge}` : "on")
+    : (edge ? `off · resumes ${edge}` : "off");
+
+  return { active: evaluation.active, nextChangeAt: evaluation.nextChangeAt, stateLabel };
+}
+
 // A local noon is always the same local weekday, whatever the runtime zone is;
 // 2024-01-07 was a Sunday.
 const WEEKDAY_REFERENCE_MS = Date.UTC(2024, 0, 7, 12);

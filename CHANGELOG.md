@@ -1,3 +1,8 @@
+# v0.5.112-primus4 (2026-11-03)
+
+## Fixes
+- **Providers**: a schedule-disabled account now says so — the status chip reads `scheduled off`, the schedule badge shows live state (`Auto on · until 16:15` / `Auto off · resumes 09:00`) and refreshes every 30 s, so a toggle that flipped itself is never mistaken for a manual disable.
+
 # v0.5.112-primus3 (2026-11-03)
 
 ## Features

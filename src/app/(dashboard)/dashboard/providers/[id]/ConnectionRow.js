@@ -212,7 +212,9 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
           )}
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
             <Badge variant={getStatusVariant()} size="sm" dot>
-              {connection.isActive === false ? "disabled" : (effectiveStatus || "Unknown")}
+              {connection.isActive === false
+                ? (schedule?.enabled === true && schedule?.liveActive === false ? "scheduled off" : "disabled")
+                : (effectiveStatus || "Unknown")}
             </Badge>
             <Badge variant="default" size="sm">
               {authLabel}
@@ -224,7 +226,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
             )}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {schedule?.badge && (
-              <Badge variant={schedule.isActive ? "primary" : "default"} size="sm">
+              <Badge variant={schedule.badgeVariant || (schedule.isActive ? "primary" : "default")} size="sm">
                 {schedule.badge}
               </Badge>
             )}
@@ -388,6 +390,10 @@ ConnectionRow.propTypes = {
     onConfigure: PropTypes.func,
   }),
   schedule: PropTypes.shape({
+    enabled: PropTypes.bool,
+    liveActive: PropTypes.bool,
+    nextChangeAt: PropTypes.string,
+    badgeVariant: PropTypes.oneOf(["default", "success", "warning", "error", "info", "primary"]),
     badge: PropTypes.string,
     isActive: PropTypes.bool,
     tooltip: PropTypes.string,
