@@ -1,3 +1,10 @@
+# Agent-only artifacts and private runtime/config
+.agents
+.hermes
+.private
+sketches
+.env*
+
 # VCS
 .git
 **/.git

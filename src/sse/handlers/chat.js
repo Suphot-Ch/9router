@@ -10,6 +10,8 @@ import {
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
 import { getSettings } from "@/lib/localDb";
+import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
+import { createRoutingAttribution, withRoutingAttribution, withRoutingAttempt, withComboRouting } from "open-sse/utils/routingAttribution.js";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -27,7 +29,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
+import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels, extractClientApiKey } from "../services/keyAccess.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 
 /**
@@ -53,6 +55,9 @@ export async function handleChat(request, clientRawRequest = null) {
       headers: Object.fromEntries(request.headers.entries())
     };
   }
+  // Always replace caller-provided context; preserve the literal model before
+  // context-marker stripping, aliases, adapters or Combo expansion change it.
+  clientRawRequest = withRoutingAttribution(clientRawRequest, createRoutingAttribution(body.model));
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.
   // The capability travels in the anthropic-beta header, forwarded as-is.
@@ -105,6 +110,16 @@ export async function handleChat(request, clientRawRequest = null) {
   // models. Checked once on the requested target, before bypass, combo expansion
   // and any credential lookup; an allowed combo grants the members it routes to.
   const keyAccess = await getKeyAccessContext(request);
+  let keyId = keyAccess?.keyId || null;
+  if (!keyId) {
+    // Unrestricted keys have no access context. Telemetry lookup is fail-open
+    // and keeps only the stable ID, never the credential or the record.
+    try {
+      const clientKey = extractClientApiKey(request);
+      if (clientKey) keyId = (await getApiKeyByKey(clientKey))?.id || null;
+    } catch { /* the usage writer can resolve it later */ }
+  }
+  clientRawRequest = withRoutingAttribution(clientRawRequest, { ...clientRawRequest.routingAttribution, keyId });
   const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
   if (keyAccessDenied) return keyAccessDenied;
 
@@ -118,6 +133,7 @@ export async function handleChat(request, clientRawRequest = null) {
   // Check if model is a combo (has multiple models with fallback)
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {
+    clientRawRequest = withComboRouting(clientRawRequest, modelStr);
     // Check for combo-specific strategy first, fallback to global
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
@@ -134,7 +150,7 @@ export async function handleChat(request, clientRawRequest = null) {
           let cleanRawReq = clientRawRequest;
           if (isPanel && clientRawRequest) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-            cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            cleanRawReq = withRoutingAttribution({ ...clientRawRequest, body: cleanBody }, clientRawRequest.routingAttribution);
           }
           return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
         },
@@ -206,6 +222,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   if (!modelInfo.provider) {
     const comboModels = await getComboModels(modelStr);
     if (comboModels) {
+      clientRawRequest = withComboRouting(clientRawRequest, modelStr);
       const chatSettings = await getSettings();
       // Check for combo-specific strategy first, fallback to global
       const comboStrategies = chatSettings.comboStrategies || {};
@@ -227,7 +244,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
             let cleanRawReq = clientRawRequest;
             if (isPanel && clientRawRequest) {
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+              cleanRawReq = withRoutingAttribution({ ...clientRawRequest, body: cleanBody }, clientRawRequest.routingAttribution);
             }
             return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
           },
@@ -325,7 +342,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
-      clientRawRequest,
+      clientRawRequest: withRoutingAttempt(clientRawRequest),
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,

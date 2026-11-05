@@ -1,3 +1,20 @@
+# v0.5.112-ch5 (2026-11-05)
+
+- Add a separate native Routing Map tab using real retained usage in Key → Direct/Combo → Provider → Model order; preserve existing Overview topology/animation and Details.
+- Persist safe request/attempt attribution for new chat usage without changing canonical token/cost accounting. Historical rows without requested-route evidence remain Legacy / route unknown.
+- Gate synthetic fixtures and demo playback behind an explicit dev-only opt-in; production defaults to authenticated observed-usage aggregates.
+
+# v0.5.112-ch5-dev.2 (2026-11-05)
+
+- Consolidate native Usage dev UI: preserve Overview topology/animation and Details; add separate Routing Map and explicitly synthetic, opt-in animation. Verify complete dev navigation before production consideration.
+- Fix lazy preview hydration under runtime Thai translation by using the existing topology's client-only dynamic loading pattern.
+- Temporary public dev gateway preserves Next request identity/RSC/HMR/i18n, blocks noncanonical paths and writes, and reports unavailable origins without an unhandled 500. The isolated dev runtime is supervised with bounded memory and restart recovery.
+- Production deployment is not part of this version.
+
+# v0.5.112-ch5-dev.1 (2026-11-05)
+
+- Dev-only native Usage Routing Map preview behind NEXT_PUBLIC_ROUTING_MAP_PREVIEW=1; synthetic data and separate dev runtime. Production Overview/Details unchanged; no telemetry/schema migration or production deployment.
+
 # v0.5.112-primus4 (2026-11-03)
 
 ## Fixes

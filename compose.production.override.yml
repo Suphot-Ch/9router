@@ -1,8 +1,8 @@
 # Apply only to the existing 9router service; preserve env, data and networks.
 # docker compose -f /home/user/ai-local/primus-ai/docker-compose.yml \
-#   -f /home/user/workspace/9router-0.5.112-primus2/compose.production.override.yml \
+#   -f /home/user/workspace/9router-usage-dev/compose.production.override.yml \
 #   up -d --no-deps --pull never 9router
 services:
   9router:
-    image: rd-primus/9router:0.5.112-primus4
+    image: rd-primus/9router:0.5.112-ch5
     pull_policy: never

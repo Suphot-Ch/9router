@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { sanitizeRoutingAttribution } from "open-sse/utils/routingAttribution.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -134,20 +135,28 @@ async function ensureRingInitialized() {
 }
 
 async function calculateCost(provider, model, tokens) {
-  if (!tokens || !provider || !model) return 0;
+  const unknown = { cost: 0, costKnown: false };
+  if (!tokens || !provider || !model) return unknown;
   try {
     const { getPricingForModel } = await import("./pricingRepo.js");
     const pricing = await getPricingForModel(provider, model);
-    if (!pricing) return 0;
+    if (!pricing) return unknown;
 
     // Delegate the actual math to the single source of truth (avoids the two
     // copies drifting apart — see open-sse/providers/pricing.js for the
     // cache-inclusive prompt_tokens convention this assumes).
     const { calculateCostFromTokens } = await import("open-sse/providers/pricing.js");
-    return calculateCostFromTokens(tokens, pricing);
+    const cost = calculateCostFromTokens(tokens, pricing);
+    const validRate = rate => typeof rate === "number" && Number.isFinite(rate) && rate >= 0;
+    // Sparse/missing/invalid prices are not evidence of a free request. Preserve
+    // canonical cost math, while marking only complete valid base rates known.
+    const costKnown = validRate(pricing.input) && validRate(pricing.output)
+      && ["cached", "reasoning", "cache_creation"].every(key => pricing[key] === undefined || validRate(pricing[key]))
+      && Number.isFinite(cost) && cost >= 0;
+    return { cost, costKnown };
   } catch (e) {
     console.error("Error calculating cost:", e);
-    return 0;
+    return unknown;
   }
 }
 
@@ -245,7 +254,15 @@ export async function saveRequestUsage(entry) {
     const db = await getAdapter();
 
     if (!entry.timestamp) entry.timestamp = new Date().toISOString();
-    entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
+    const calculated = await calculateCost(entry.provider, entry.model, entry.tokens);
+    entry.cost = calculated.cost;
+
+    let routing = sanitizeRoutingAttribution(entry.routingAttribution);
+    if (routing && !routing.keyId && typeof entry.apiKey === "string") {
+      const key = db.get(`SELECT id FROM apiKeys WHERE key = ?`, [entry.apiKey.trim()]);
+      if (key) routing = { ...routing, keyId: key.id };
+    }
+    if (routing) routing = { ...routing, costKnown: calculated.costKnown };
 
     const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
@@ -253,10 +270,18 @@ export async function saveRequestUsage(entry) {
 
     let inserted = false;
 
-    // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
+    // History, attribution idempotency, daily upsert and lifetime counter are atomic.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
     db.transaction(() => {
-      const existing = db.get(
+      // _meta's primary key is an indexed idempotency ledger: no JSON scan of
+      // retained history on every save, and duplicate callbacks survive restarts.
+      // Keep tombstones after history retention so old attempts cannot recharge.
+      const attemptKey = routing ? `usageAttempt:${routing.attemptId}` : null;
+      const existing = routing ? db.get(
+        `SELECT h.id, h.endpoint FROM _meta m
+         LEFT JOIN usageHistory h ON h.id = CAST(m.value AS INTEGER) WHERE m.key = ?`,
+        [attemptKey]
+      ) : db.get(
         `SELECT id, endpoint FROM usageHistory
          WHERE timestamp = ?
            AND COALESCE(provider, '') = COALESCE(?, '')
@@ -274,21 +299,25 @@ export async function saveRequestUsage(entry) {
       );
 
       if (existing) {
-        if (!existing.endpoint && entry.endpoint) {
+        if (existing.id && !existing.endpoint && entry.endpoint) {
           db.run(`UPDATE usageHistory SET endpoint = ? WHERE id = ?`, [entry.endpoint, existing.id]);
         }
         return;
       }
 
-      db.run(
+      const saved = db.run(
         `INSERT INTO usageHistory(timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           entry.timestamp, entry.provider || null, entry.model || null,
           entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
-          stringifyJson(tokens), stringifyJson({}),
+          stringifyJson(tokens), stringifyJson(routing ? { routing } : {}),
         ]
       );
+
+      if (attemptKey) {
+        db.run(`INSERT INTO _meta(key, value) VALUES(?, ?)`, [attemptKey, String(saved.lastInsertRowid)]);
+      }
 
       const dateKey = getLocalDateKey(entry.timestamp);
       const row = db.get(`SELECT data FROM usageDaily WHERE dateKey = ?`, [dateKey]);

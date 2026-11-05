@@ -5,6 +5,19 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { RequestLogger, CardSkeleton, SegmentedControl } from "@/shared/components";
 import UsageStats from "@/shared/components/UsageStats";
 import RequestDetailsTab from "./components/RequestDetailsTab";
+import dynamic from "next/dynamic";
+
+const routingPreviewEnabled = process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_ROUTING_MAP_PREVIEW === "1";
+const RoutingMap = dynamic(() => import("./components/RoutingMap"), {
+  // Runtime i18n must not mutate graph text between SSR and hydration.
+  ssr: false,
+  loading: () => <CardSkeleton />,
+});
+const RoutingMapPreview = dynamic(() => import("./components/RoutingMapPreview"), {
+  // Match ProviderTopology: runtime i18n can mutate SSR text before a lazy graph hydrates.
+  ssr: false,
+  loading: () => <CardSkeleton />,
+});
 
 const PERIODS = [
   { value: "today", label: "Today" },
@@ -30,7 +43,9 @@ function UsageContent() {
   const [period, setPeriod] = useState("today");
 
   const tabFromUrl = searchParams.get("tab");
-  const activeTab = tabFromUrl && ["overview", "logs", "details"].includes(tabFromUrl)
+  const allowedTabs = ["overview", "routing-map", "logs", "details"];
+  const showRoutingDemo = routingPreviewEnabled && searchParams.get("demo") === "1";
+  const activeTab = tabFromUrl && allowedTabs.includes(tabFromUrl)
     ? tabFromUrl
     : "overview";
 
@@ -48,13 +63,14 @@ function UsageContent() {
         <SegmentedControl
           options={[
             { value: "overview", label: "Overview" },
+            { value: "routing-map", label: "Routing Map" },
             { value: "details", label: "Details" },
           ]}
           value={activeTab}
           onChange={handleTabChange}
           className="w-full sm:w-auto"
         />
-        {activeTab === "overview" && (
+        {(activeTab === "overview" || activeTab === "routing-map") && (
           <SegmentedControl
             options={PERIODS}
             value={period}
@@ -72,6 +88,7 @@ function UsageContent() {
       )}
       {activeTab === "logs" && <RequestLogger />}
       {activeTab === "details" && <RequestDetailsTab />}
+      {activeTab === "routing-map" && (showRoutingDemo ? <RoutingMapPreview /> : <RoutingMap period={period} />)}
     </div>
   );
 }
