@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { normalizeComboContextLength, normalizeComboMaxOutputTokens } from "@/shared/utils/comboContext.js";
 
 function rowToCombo(row) {
   if (!row) return null;
@@ -8,6 +9,8 @@ function rowToCombo(row) {
     id: row.id,
     name: row.name,
     kind: row.kind,
+    contextLength: row.contextLength ?? null,
+    maxOutputTokens: row.maxOutputTokens ?? null,
     models: parseJson(row.models, []),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -39,13 +42,15 @@ export async function createCombo(data) {
     id: uuidv4(),
     name: data.name,
     kind: data.kind || null,
+    contextLength: normalizeComboContextLength(data.contextLength),
+    maxOutputTokens: normalizeComboMaxOutputTokens(data.maxOutputTokens),
     models: data.models || [],
     createdAt: now,
     updatedAt: now,
   };
   db.run(
-    `INSERT INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-    [combo.id, combo.name, combo.kind, stringifyJson(combo.models), combo.createdAt, combo.updatedAt]
+    `INSERT INTO combos(id, name, kind, contextLength, maxOutputTokens, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+    [combo.id, combo.name, combo.kind, combo.contextLength, combo.maxOutputTokens, stringifyJson(combo.models), combo.createdAt, combo.updatedAt]
   );
   return combo;
 }
@@ -57,9 +62,11 @@ export async function updateCombo(id, data) {
     const row = db.get(`SELECT * FROM combos WHERE id = ?`, [id]);
     if (!row) return;
     const merged = { ...rowToCombo(row), ...data, updatedAt: new Date().toISOString() };
+    merged.contextLength = normalizeComboContextLength(merged.contextLength);
+    merged.maxOutputTokens = normalizeComboMaxOutputTokens(merged.maxOutputTokens);
     db.run(
-      `UPDATE combos SET name = ?, kind = ?, models = ?, updatedAt = ? WHERE id = ?`,
-      [merged.name, merged.kind, stringifyJson(merged.models || []), merged.updatedAt, id]
+      `UPDATE combos SET name = ?, kind = ?, contextLength = ?, maxOutputTokens = ?, models = ?, updatedAt = ? WHERE id = ?`,
+      [merged.name, merged.kind, merged.contextLength, merged.maxOutputTokens, stringifyJson(merged.models || []), merged.updatedAt, id]
     );
     result = merged;
   });

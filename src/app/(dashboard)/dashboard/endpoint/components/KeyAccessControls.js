@@ -8,7 +8,7 @@ import { useState } from "react";
 import PropTypes from "prop-types";
 import { Toggle, ModelSelectModal } from "@/shared/components";
 
-export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict }) {
+export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict, subject = "key" }) {
   const access = apiKey.access || { restricted: false, allow: [] };
   const [pickerOpen, setPickerOpen] = useState(false);
   const [activeProviders, setActiveProviders] = useState([]);
@@ -35,19 +35,21 @@ export default function KeyAccessControls({ apiKey, onChange, onRequestRestrict 
 
   return (
     <div className="mt-2" data-testid="key-access">
-      <Toggle
-        size="sm"
-        checked={access.restricted}
-        label="Restrict access"
-        onChange={(checked) => (checked ? onRequestRestrict() : onChange({ restricted: false, allow: access.allow }))}
-      />
+      <label aria-label="Restrict access" className="inline-flex min-h-11 items-center">
+        <Toggle
+          size="sm"
+          checked={access.restricted}
+          label="Restrict access"
+          onChange={(checked) => (checked ? onRequestRestrict() : onChange({ restricted: false, allow: access.allow }))}
+        />
+      </label>
       {access.restricted && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {access.allow.length === 0 && (
-            <span className="text-xs text-orange-500">No combos or models allowed — this key can call nothing.</span>
+            <span className="text-xs text-orange-500">No combos or models allowed — {subject === "group" ? "this group allows nothing." : "this key can call nothing."}</span>
           )}
           {access.allow.map((entry) => (
-            <span key={entry} className="flex items-center gap-1 rounded-xl border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-xs text-text-main">
+            <span key={entry} className="flex min-w-0 max-w-full break-all items-center gap-1 rounded-xl border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-xs text-text-main">
               {entry}
               <button
                 onClick={() => remove(entry)}

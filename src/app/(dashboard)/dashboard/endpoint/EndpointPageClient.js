@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
-import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
+import { Card, Button, Input, Modal, Toggle, ConfirmModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import {
   TUNNEL_BENEFITS,
@@ -21,12 +21,13 @@ import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
 import KeyLimitsSummary from "./components/KeyLimitsSummary";
 import KeyLimitsModal from "./components/KeyLimitsModal";
+import KeyGovernance from "./components/KeyGovernance";
+import EndpointTabs from "./components/EndpointTabs";
 import KeyLimitsFields, { EMPTY_LIMITS } from "./components/KeyLimitsFields";
 import { buildCreateKeyPayload } from "@/shared/utils/keyLimits";
 
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyLimits, setNewKeyLimits] = useState(EMPTY_LIMITS);
@@ -109,7 +110,6 @@ export default function APIPageClient({ machineId }) {
   }, [tsInstallLog]);
 
   useEffect(() => {
-    fetchData();
     loadSettings();
   }, []);
 
@@ -255,18 +255,19 @@ export default function APIPageClient({ machineId }) {
     }
   };
 
-  const fetchData = async () => {
+  const fetchData = async (initial = false) => {
     try {
       const fetchKeys = async () => {
-        const res = await fetch("/api/keys");
-        if (!res.ok) return [];
+        const res = await fetch("/api/keys", { cache: "no-store" });
+        if (!res.ok) throw new Error("Unable to refresh keys and effective policies. Please retry.");
         const data = await res.json();
-        return data.keys || [];
+        if (!Array.isArray(data.keys)) throw new Error("Invalid keys response. Please retry.");
+        return data.keys;
       };
 
       let existing = await fetchKeys();
       // Auto-provision a default key for first-time users so the endpoint works out of the box.
-      if (existing.length === 0) {
+      if (initial && existing.length === 0) {
         try {
           const createRes = await fetch("/api/keys", {
             method: "POST",
@@ -278,9 +279,7 @@ export default function APIPageClient({ machineId }) {
       }
       setKeys(existing);
     } catch (error) {
-      console.log("Error fetching data:", error);
-    } finally {
-      setLoading(false);
+      throw error;
     }
   };
 
@@ -735,19 +734,11 @@ export default function APIPageClient({ machineId }) {
     }
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex flex-col gap-8">
-        <CardSkeleton />
-        <CardSkeleton />
-      </div>
-    );
-  }
-
   const currentEndpoint = baseUrl;
 
   return (
-    <div className="flex flex-col gap-8">
+    <EndpointTabs onKeysSelected={fetchData}>
+    <div className="flex min-w-0 flex-col gap-8">
       {/* Endpoint Card */}
       <Card>
         <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
@@ -1040,9 +1031,9 @@ export default function APIPageClient({ machineId }) {
             {keys.map((key) => (
               <div
                 key={key.id}
-                className={`group flex items-start justify-between gap-3 py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 ${key.isActive === false ? "opacity-60" : ""}`}
+                className={`group flex flex-col sm:flex-row items-start justify-between gap-3 py-3 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0 ${key.isActive === false ? "opacity-60" : ""}`}
               >
-                <div className="flex-1 min-w-0">
+                <div className="w-full flex-1 min-w-0">
                   <p className="text-sm font-medium">{key.name}</p>
                   <div className="flex items-center gap-2 mt-1 min-w-0 flex-wrap">
                     <code className="text-xs text-text-muted font-mono break-all min-w-0">
@@ -1087,6 +1078,7 @@ export default function APIPageClient({ machineId }) {
                     })}
                   />
                   <KeyLimitsSummary apiKey={key} onEditLimits={() => setLimitsKeyId(key.id)} />
+                  <KeyGovernance apiKey={key} onSaved={(updatedKey) => handleLimitsSaved(key.id, updatedKey)} />
                 </div>
                 <div className="flex items-center gap-2 shrink-0 pt-0.5">
                   <Toggle
@@ -1394,6 +1386,7 @@ export default function APIPageClient({ machineId }) {
         variant="danger"
       />
     </div>
+    </EndpointTabs>
   );
 }
 

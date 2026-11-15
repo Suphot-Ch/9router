@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 6;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -97,14 +97,35 @@ export const TABLES = {
       // syncSchemaFromTables() on boot; existing rows read as unrestricted (0).
       accessRestricted: "INTEGER DEFAULT 0",
       accessAllow: "TEXT",
+      rpmLimit: "INTEGER DEFAULT 0",
+      tpmLimit: "INTEGER DEFAULT 0",
+      accessMode: "TEXT DEFAULT 'local'",
+      accessGroupId: "TEXT",
+      alertsEnabled: "INTEGER DEFAULT 1",
+      alertThresholds: "TEXT DEFAULT '[80,90,100]'",
+      budgetEpochId: "TEXT",
+      alertPolicyVersion: "INTEGER DEFAULT 1",
+      unknownCostCount: "INTEGER DEFAULT 0",
     },
     indexes: ["CREATE INDEX IF NOT EXISTS idx_ak_key ON apiKeys(key)"],
+  },
+  accessGroups: {
+    columns: { id: "TEXT PRIMARY KEY", name: "TEXT NOT NULL", access: "TEXT NOT NULL", createdAt: "TEXT NOT NULL", updatedAt: "TEXT NOT NULL" },
+  },
+  keyAlertEvents: {
+    columns: { id: "TEXT PRIMARY KEY", keyId: "TEXT NOT NULL", metric: "TEXT NOT NULL", threshold: "INTEGER NOT NULL", used: "REAL NOT NULL", limitValue: "REAL NOT NULL", period: "TEXT NOT NULL", policyVersion: "INTEGER NOT NULL", createdAt: "TEXT NOT NULL", acknowledgedAt: "TEXT", unknownCostCount: "INTEGER DEFAULT 0" },
+    indexes: ["CREATE UNIQUE INDEX IF NOT EXISTS idx_key_alert_crossing ON keyAlertEvents(keyId,period,metric,threshold,policyVersion)", "CREATE INDEX IF NOT EXISTS idx_key_alert_created ON keyAlertEvents(createdAt DESC)"],
+  },
+  keyAlertOutbox: {
+    columns: { id: "TEXT PRIMARY KEY", eventId: "TEXT UNIQUE NOT NULL", state: "TEXT NOT NULL DEFAULT 'inbox'", createdAt: "TEXT NOT NULL" },
   },
   combos: {
     columns: {
       id: "TEXT PRIMARY KEY",
       name: "TEXT UNIQUE NOT NULL",
       kind: "TEXT",
+      contextLength: "INTEGER",
+      maxOutputTokens: "INTEGER",
       models: "TEXT NOT NULL",
       createdAt: "TEXT NOT NULL",
       updatedAt: "TEXT NOT NULL",

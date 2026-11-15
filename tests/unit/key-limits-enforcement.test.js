@@ -94,10 +94,10 @@ describe("unknown keys keep existing behavior", () => {
     expect(await checkApiKeyQuota(null, true)).toMatchObject({ status: 401, code: "missing_api_key" });
   });
 
-  it("rejects a paused key when keys are required, ignores it in local mode", async () => {
+  it("rejects a paused known key in both protected and local mode", async () => {
     const key = await create();
     await repo.updateApiKey(key.id, { isActive: false });
-    expect(await checkApiKeyQuota(key.key, false)).toBeNull();
+    expect(await checkApiKeyQuota(key.key, false)).toMatchObject({ status: 401, code: "inactive_api_key" });
     expect(await checkApiKeyQuota(key.key, true)).toMatchObject({ status: 401 });
   });
 });

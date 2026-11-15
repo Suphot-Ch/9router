@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
+import { normalizeComboContextLength, normalizeComboMaxOutputTokens } from "@/shared/utils/comboContext.js";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,8 @@ export async function POST(request) {
   try {
     const body = await request.json();
     const { name, models, kind } = body;
+    const contextLength = normalizeComboContextLength(body.contextLength);
+    const maxOutputTokens = normalizeComboMaxOutputTokens(body.maxOutputTokens);
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -38,10 +41,11 @@ export async function POST(request) {
       return NextResponse.json({ error: "Combo name already exists" }, { status: 400 });
     }
 
-    const combo = await createCombo({ name, models: models || [], kind: kind || null });
+    const combo = await createCombo({ name, models: models || [], kind: kind || null, contextLength, maxOutputTokens });
 
     return NextResponse.json(combo, { status: 201 });
   } catch (error) {
+    if (error.status === 400) return NextResponse.json({ error: error.message }, { status: 400 });
     console.log("Error creating combo:", error);
     return NextResponse.json({ error: "Failed to create combo" }, { status: 500 });
   }

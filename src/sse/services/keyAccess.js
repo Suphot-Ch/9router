@@ -23,6 +23,7 @@
 // The check runs before any credential lookup, so a denied request never
 // touches a provider account.
 import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
+import { getEffectiveKeyAccess } from "@/lib/db/repos/accessGroupsRepo.js";
 import { getCombos } from "@/lib/db/repos/combosRepo.js";
 import { getModelInfo, getComboModels } from "./model.js";
 import { resolveProviderId } from "@/shared/constants/providers.js";
@@ -71,13 +72,19 @@ export async function getKeyAccessContext(request) {
   const apiKey = extractClientApiKey(request);
   if (!apiKey) return null;
   const record = await getApiKeyByKey(apiKey);
-  if (!record?.access?.restricted) return null;
-  return {
+  if (!record) return null;
+  const effective = await getEffectiveKeyAccess(record);
+  if (!record.isActive) effective.policies = [{ restricted: true, allow: [] }];
+  const policies = effective.policies.filter(p => p.restricted);
+  if (!policies.length) return null;
+  const context = {
     keyId: record.id,
     keyName: record.name || record.id,
-    allow: record.access.allow || [],
+    allow: policies[0].allow || [],
     _sets: null,
   };
+  if (policies.length > 1) context.policies = policies.map(p => ({ keyId: record.id, keyName: context.keyName, allow: p.allow || [], _sets: null }));
+  return context;
 }
 
 // Resolve the allow list once per request: combo names, resolved model ids,
@@ -103,6 +110,10 @@ async function getAllowSets(ctx) {
 }
 
 async function isModelStringAllowed(ctx, requested) {
+  if (ctx.policies) {
+    for (const policy of ctx.policies) if (!await isModelStringAllowed(policy, requested)) return false;
+    return true;
+  }
   const sets = await getAllowSets(ctx);
   const info = await getModelInfo(requested);
   // provider null ⇔ an existing combo with no members (routes nowhere).
@@ -122,6 +133,10 @@ export function keyAccessDeniedResponse(ctx, requested) {
  */
 export async function enforceKeyAccess(ctx, requested) {
   if (!ctx) return null;
+  if (ctx.policies) {
+    for (const policy of ctx.policies) { const denied = await enforceKeyAccess(policy, requested); if (denied) return denied; }
+    return null;
+  }
   if (typeof requested !== "string" || !requested) return keyAccessDeniedResponse(ctx, String(requested ?? ""));
   const sets = await getAllowSets(ctx);
   const comboModels = await getComboModels(requested);
@@ -139,6 +154,10 @@ export async function enforceKeyAccess(ctx, requested) {
  */
 export async function enforceKeyAccessResolved(ctx, requested, provider, model) {
   if (!ctx) return null;
+  if (ctx.policies) {
+    for (const policy of ctx.policies) { const denied = await enforceKeyAccessResolved(policy, requested, provider, model); if (denied) return denied; }
+    return null;
+  }
   const label = requested || (provider ? `${provider}/${model ?? ""}` : "");
   if (!provider || !model) return keyAccessDeniedResponse(ctx, label);
   const sets = await getAllowSets(ctx);
@@ -151,6 +170,10 @@ export async function enforceKeyAccessResolved(ctx, requested, provider, model) 
  */
 export async function enforceKeyAccessProvider(ctx, requested, comboModels) {
   if (!ctx) return null;
+  if (ctx.policies) {
+    for (const policy of ctx.policies) { const denied = await enforceKeyAccessProvider(policy, requested, comboModels); if (denied) return denied; }
+    return null;
+  }
   if (typeof requested !== "string" || !requested) return keyAccessDeniedResponse(ctx, String(requested ?? ""));
   const sets = await getAllowSets(ctx);
   const allowed = comboModels
@@ -179,6 +202,10 @@ export async function filterAdapterModels(ctx, augmented, original) {
 /** /v1/models: a restricted key sees only the combos and models it may call. */
 export async function filterModelsListForKey(ctx, list) {
   if (!ctx || !Array.isArray(list)) return list;
+  if (ctx.policies) {
+    for (const policy of ctx.policies) list = await filterModelsListForKey(policy, list);
+    return list;
+  }
   const sets = await getAllowSets(ctx);
   const out = [];
   for (const entry of list) {

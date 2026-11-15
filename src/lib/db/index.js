@@ -3,6 +3,10 @@ import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 import { keyAccessFromColumns, keyAccessToColumns, validateKeyAccessInput } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
+import { resolveKeyPolicy, saveKeyPolicy } from '@/shared/utils/keyPolicy.js';
+import { getApiKeys } from './repos/apiKeysRepo.js';
+import { requireAccessGroup } from './repos/accessGroupsRepo.js';
+import { normalizeComboContextLength, normalizeComboMaxOutputTokens } from '@/shared/utils/comboContext.js';
 
 // Settings
 export {
@@ -34,6 +38,10 @@ export {
   getApiKeys, getApiKeyById, getApiKeyByKey, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
   addApiKeyUsage, resetApiKeyUsage, applyDueKeyReset, ApiKeyValidationError,
 } from "./repos/apiKeysRepo.js";
+
+// Governance
+export { getAccessGroups, getAccessGroupById, createAccessGroup, updateAccessGroup, deleteAccessGroup, getEffectiveKeyAccess } from './repos/accessGroupsRepo.js';
+export { getKeyAlerts, acknowledgeKeyAlert } from './repos/keyAlertsRepo.js';
 
 // Combos
 export {
@@ -80,8 +88,11 @@ export async function exportDb() {
     providerConnections: db.all(`SELECT * FROM providerConnections`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, provider: r.provider, authType: r.authType, name: r.name, email: r.email, priority: r.priority, isActive: r.isActive === 1, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
-    apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, access: keyAccessFromColumns(r.accessRestricted, r.accessAllow) })),
-    combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
+    apiKeys: await getApiKeys(),
+    accessGroups: db.all('SELECT * FROM accessGroups'),
+    keyAlertEvents: db.all('SELECT * FROM keyAlertEvents'),
+    keyAlertOutbox: db.all('SELECT * FROM keyAlertOutbox'),
+    combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, contextLength: r.contextLength ?? null, maxOutputTokens: r.maxOutputTokens ?? null, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
     mitmAlias: {},
@@ -109,6 +120,9 @@ export async function importDb(payload) {
     db.run(`DELETE FROM providerNodes`);
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
+    db.run('DELETE FROM accessGroups');
+    db.run('DELETE FROM keyAlertEvents');
+    db.run('DELETE FROM keyAlertOutbox');
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
 
@@ -138,6 +152,13 @@ export async function importDb(payload) {
         [id, isActive === false ? 0 : 1, testStatus || "unknown", stringifyJson(rest), createdAt || new Date().toISOString(), updatedAt || new Date().toISOString()]
       );
     }
+    for (const g of payload.accessGroups || []) {
+      let access;
+      try { access = typeof g.access === 'string' ? JSON.parse(g.access) : g.access; } catch { throw new Error('Invalid group access'); }
+      const checked = validateKeyAccessInput(access);
+      if (!checked.ok || typeof g.name !== 'string' || !g.name.trim()) throw new Error('Invalid group');
+      db.run('INSERT INTO accessGroups(id,name,access,createdAt,updatedAt) VALUES(?,?,?,?,?)', [g.id,g.name,stringifyJson(checked.value),g.createdAt || new Date().toISOString(),g.updatedAt || new Date().toISOString()]);
+    }
     for (const k of payload.apiKeys || []) {
       // Per-key access: a backup without `access` (older version) restores
       // unrestricted, exactly as before; a malformed `access` is refused.
@@ -152,11 +173,27 @@ export async function importDb(payload) {
         `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, accessRestricted, accessAllow) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), cols.accessRestricted, cols.accessAllow]
       );
+      const policy = resolveKeyPolicy(k);
+      requireAccessGroup(db, policy);
+      saveKeyPolicy(db, k.id, policy);
+      const budget = ['tokenLimit','costLimit','usedTokens','usedCost','unknownCostCount'];
+      for (const field of budget) {
+        if (k[field] !== undefined && (typeof k[field] !== 'number' || !Number.isFinite(k[field]) || k[field] < 0)) throw new Error(`Invalid ${field}`);
+        db.run(`UPDATE apiKeys SET ${field}=? WHERE id=?`, [k[field] ?? 0,k.id]);
+      }
+      if (k.resetMode !== undefined && !['none','weekly','monthly'].includes(k.resetMode)) throw new Error('Invalid resetMode');
+      db.run('UPDATE apiKeys SET resetMode=?,resetDay=?,lastResetAt=?,budgetEpochId=?,alertPolicyVersion=?,updatedAt=? WHERE id=?', [k.resetMode || 'none',k.resetDay ?? null,k.lastResetAt ?? null,k.budgetEpochId || `legacy:${k.id}`,k.alertPolicyVersion ?? 1,k.updatedAt ?? null,k.id]);
+    }
+    for (const a of payload.keyAlertEvents || []) {
+      db.run('INSERT INTO keyAlertEvents(id,keyId,metric,threshold,used,limitValue,period,policyVersion,createdAt,acknowledgedAt,unknownCostCount) VALUES(?,?,?,?,?,?,?,?,?,?,?)', [a.id,a.keyId,a.metric,a.threshold,a.used,a.limitValue,a.period,a.policyVersion,a.createdAt,a.acknowledgedAt ?? null,a.unknownCostCount ?? 0]);
+    }
+    for (const o of payload.keyAlertOutbox || []) {
+      db.run('INSERT INTO keyAlertOutbox(id,eventId,state,createdAt) VALUES(?,?,?,?)', [o.id,o.eventId,'inbox',o.createdAt]);
     }
     for (const c of payload.combos || []) {
       db.run(
-        `INSERT OR REPLACE INTO combos(id, name, kind, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-        [c.id, c.name, c.kind || null, stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
+        `INSERT OR REPLACE INTO combos(id, name, kind, contextLength, maxOutputTokens, models, createdAt, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+        [c.id, c.name, c.kind || null, normalizeComboContextLength(c.contextLength), normalizeComboMaxOutputTokens(c.maxOutputTokens), stringifyJson(c.models || []), c.createdAt || new Date().toISOString(), c.updatedAt || new Date().toISOString()]
       );
     }
     for (const [a, m] of Object.entries(payload.modelAliases || {})) {

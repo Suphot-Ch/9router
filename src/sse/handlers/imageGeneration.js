@@ -6,6 +6,7 @@ import {
   isValidApiKey,
   checkApiKeyQuota,
 } from "../services/auth.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
@@ -45,7 +46,11 @@ function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoi
  * Handle image generation request
  * @param {Request} request
  */
-export async function handleImageGeneration(request) {
+export function handleImageGeneration(request) {
+  return withKeyRateLifecycle(request, () => handleImageGenerationImpl(request));
+}
+
+async function handleImageGenerationImpl(request) {
   let body;
   try {
     body = await request.json();
@@ -67,20 +72,17 @@ export async function handleImageGeneration(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  // Per-key spending limits: a known key is limited even in local mode;
-  // unknown keys keep the behaviour above. Before any routing work.
-  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey);
-  if (quotaDenied) {
-    log.warn("AUTH", `${quotaDenied.error} (key=${log.maskKey(apiKey)})`);
-    return errorResponse(quotaDenied.status, quotaDenied.error, null, quotaDenied.code);
-  }
-
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
 
   // Per-key access control: requested target, before combo expansion.
   const keyAccessDenied = await enforceKeyAccess(await getKeyAccessContext(request), modelStr);
   if (keyAccessDenied) return keyAccessDenied;
+
+  // One logical admission, after validation/access and before upstream/fallback.
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey, { admit: true, request, tokenBased: false });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
+
 
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
   const comboModels = await getComboModels(modelStr);

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
+import { parseComboContext } from "@/shared/utils/comboContextClient";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -224,42 +225,33 @@ export default function CombosPage() {
     }
   };
 
+  // Reject to the modal so API validation/network failures retain the draft.
   const handleCreate = async (data) => {
-    try {
-      const res = await fetch("/api/combos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        await fetchData();
-        setShowCreateModal(false);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to create combo");
-      }
-    } catch (error) {
-      console.log("Error creating combo:", error);
+    const res = await fetch("/api/combos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to create combo");
     }
+    await fetchData();
+    setShowCreateModal(false);
   };
 
   const handleUpdate = async (id, data) => {
-    try {
-      const res = await fetch(`/api/combos/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (res.ok) {
-        await fetchData();
-        setEditingCombo(null);
-      } else {
-        const err = await res.json();
-        alert(err.error || "Failed to update combo");
-      }
-    } catch (error) {
-      console.log("Error updating combo:", error);
+    const res = await fetch(`/api/combos/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || "Failed to update combo");
     }
+    await fetchData();
+    setEditingCombo(null);
   };
 
   const pruneStrategiesForNames = (names, base = comboStrategies) => {
@@ -707,13 +699,15 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
                 <span className="text-[10px] text-text-muted">+{combo.models.length - 3} more</span>
               )}
             </div>
-            {comboCaps && (
-              <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
-                <span>ctx {fmtK(comboCaps.contextWindow)}</span>
-                <span className="opacity-40">·</span>
-                <span>max {fmtK(comboCaps.maxOutput)}</span>
-              </div>
-            )}
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
+              <span title={combo.contextLength != null ? `${combo.contextLength.toLocaleString("en-US")} tokens · client metadata only` : "Inferred from the smallest member context window"}>
+                {`ctx ${combo.contextLength != null ? "Manual" : "Auto"} · ${combo.contextLength != null && combo.contextLength < 1000 ? combo.contextLength : fmtK(combo.contextLength ?? comboCaps?.contextWindow)}`}
+              </span>
+              <span className="opacity-40">·</span>
+              <span title={combo.maxOutputTokens != null ? `${combo.maxOutputTokens.toLocaleString("en-US")} tokens · client metadata only; does not set request max_tokens` : "Inferred from the smallest member max output"}>
+                {`max ${combo.maxOutputTokens != null ? "Manual" : "Auto"} · ${combo.maxOutputTokens != null && combo.maxOutputTokens < 1000 ? combo.maxOutputTokens : fmtK(combo.maxOutputTokens ?? comboCaps?.maxOutput)}`}
+              </span>
+            </div>
             {/* Fusion: judge picker (Auto = first model) */}
             {isFusion && (
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
@@ -1181,6 +1175,13 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
+  const [contextDraft, setContextDraft] = useState(combo?.contextLength == null ? "" : String(combo.contextLength));
+  const contextId = useId();
+  const context = parseComboContext(contextDraft);
+  const [outputDraft, setOutputDraft] = useState(combo?.maxOutputTokens == null ? "" : String(combo.maxOutputTokens));
+  const outputId = useId();
+  const output = parseComboContext(outputDraft);
+  const [saveError, setSaveError] = useState("");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -1269,10 +1270,16 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
   };
 
   const handleSave = async () => {
-    if (!validateName(name)) return;
+    if (!validateName(name) || context.error || output.error || saving) return;
+    setSaveError("");
     setSaving(true);
-    await onSave({ name: name.trim(), models });
-    setSaving(false);
+    try {
+      await onSave({ name: name.trim(), models, contextLength: context.value, maxOutputTokens: output.value });
+    } catch (error) {
+      setSaveError(error.message || "Failed to save combo. Please retry.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const isEdit = !!combo;
@@ -1345,6 +1352,23 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
             </button>
           </div>
 
+          <div className="min-w-0">
+            <label htmlFor={contextId} className="mb-1.5 block text-sm font-medium">Context window (tokens)</label>
+            <Input id={contextId} aria-label="Context window (tokens)" value={contextDraft}
+              onChange={(e) => { setContextDraft(e.target.value); setSaveError(""); }} placeholder="Auto" inputMode="numeric"
+              aria-describedby={`${contextId}-help`} aria-invalid={!!context.error} error={context.error} disabled={saving} />
+            <p id={`${contextId}-help`} className="mt-1 text-xs text-text-muted">Leave blank for Auto. Custom context is client metadata only; it does not expand upstream capacity or change the output budget. Above the smallest seat limit, a fallback may reject the request.</p>
+          </div>
+
+          <div className="min-w-0">
+            <label htmlFor={outputId} className="mb-1.5 block text-sm font-medium">Max output (tokens)</label>
+            <Input id={outputId} aria-label="Max output (tokens)" value={outputDraft}
+              onChange={(e) => { setOutputDraft(e.target.value); setSaveError(""); }} placeholder="Auto" inputMode="numeric"
+              aria-describedby={`${outputId}-help`} aria-invalid={!!output.error} error={output.error} disabled={saving} />
+            <p id={`${outputId}-help`} className="mt-1 text-xs text-text-muted">Leave blank for Auto. Custom max output is independent client metadata; it does not expand upstream limits, inject request max_tokens, or truncate requests or responses.</p>
+          </div>
+
+          {saveError && <p role="alert" className="text-xs text-red-500">{saveError}</p>}
           {/* Actions */}
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
             <Button onClick={onClose} variant="ghost" fullWidth size="sm">
@@ -1354,7 +1378,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
               onClick={handleSave}
               fullWidth
               size="sm"
-              disabled={!name.trim() || !!nameError || saving}
+              disabled={!name.trim() || !!nameError || !!context.error || !!output.error || saving}
             >
               {saving ? "Saving..." : isEdit ? "Save" : "Create"}
             </Button>

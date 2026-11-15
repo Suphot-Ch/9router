@@ -6,6 +6,7 @@ import {
   isValidApiKey,
   checkApiKeyQuota,
 } from "../services/auth.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
@@ -31,7 +32,11 @@ function exactEmbeddingUsage(raw) {
  *
  * @param {Request} request
  */
-export async function handleEmbeddings(request) {
+export function handleEmbeddings(request) {
+  return withKeyRateLifecycle(request, () => handleEmbeddingsImpl(request));
+}
+
+async function handleEmbeddingsImpl(request) {
   let body;
   try {
     body = await request.json();
@@ -67,14 +72,6 @@ export async function handleEmbeddings(request) {
     }
   }
 
-  // Per-key spending limits: enforced for a known key even in local mode
-  // (unknown keys keep the behaviour above). Runs before any routing work.
-  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey);
-  if (quotaDenied) {
-    log.warn("AUTH", `${quotaDenied.error} (key=${log.maskKey(apiKey)})`);
-    return errorResponse(quotaDenied.status, quotaDenied.error, null, quotaDenied.code);
-  }
-
   if (!modelStr) {
     log.warn("EMBEDDINGS", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
@@ -96,6 +93,11 @@ export async function handleEmbeddings(request) {
   // Per-key access control: checked before any credential lookup.
   const keyAccessDenied = await enforceKeyAccessResolved(await getKeyAccessContext(request), modelStr, provider, model);
   if (keyAccessDenied) return keyAccessDenied;
+
+  // One logical admission, after validation/access and before upstream/fallback.
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey, { admit: true, request, tokenBased: true });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
+
 
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);

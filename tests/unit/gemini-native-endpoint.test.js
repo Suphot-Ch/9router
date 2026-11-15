@@ -14,6 +14,8 @@ vi.mock("@/sse/handlers/chat.js", () => ({
 }));
 
 vi.mock("@/sse/services/auth.js", () => ({
+  checkApiKeyQuota: async () => null,
+  extractApiKey: request => request.headers.get("Authorization")?.slice(7) || request.headers.get("x-api-key") || request.headers.get("x-goog-api-key") || new URL(request.url).searchParams.get("key"),
   getProviderCredentials: mocks.getProviderCredentials,
   isValidApiKey: mocks.isValidApiKey,
   markAccountUnavailable: mocks.markAccountUnavailable,

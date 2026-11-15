@@ -9,6 +9,7 @@ import {
   checkApiKeyQuota,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings } from "@/lib/localDb";
 import { getApiKeyByKey } from "@/lib/db/repos/apiKeysRepo.js";
 import { createRoutingAttribution, withRoutingAttribution, withRoutingAttempt, withComboRouting } from "open-sse/utils/routingAttribution.js";
@@ -37,7 +38,11 @@ import { resolveSmartChoice } from "../services/systemoneRouter.js";
  * Supports: OpenAI, Claude, Gemini, OpenAI Responses API formats
  * Format detection and translation handled by translator
  */
-export async function handleChat(request, clientRawRequest = null) {
+export function handleChat(request, clientRawRequest = null) {
+  return withKeyRateLifecycle(request, () => handleChatImpl(request, clientRawRequest));
+}
+
+async function handleChatImpl(request, clientRawRequest = null) {
   let body;
   try {
     body = await request.json();
@@ -93,14 +98,6 @@ export async function handleChat(request, clientRawRequest = null) {
     }
   }
 
-  // Per-key spending limits: enforced for a known key even in local mode
-  // (unknown keys keep the behaviour above). Runs before any routing work.
-  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey);
-  if (quotaDenied) {
-    log.warn("AUTH", `${quotaDenied.error} (key=${log.maskKey(apiKey)})`);
-    return errorResponse(quotaDenied.status, quotaDenied.error, null, quotaDenied.code);
-  }
-
   if (!modelStr) {
     log.warn("CHAT", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
@@ -122,6 +119,11 @@ export async function handleChat(request, clientRawRequest = null) {
   clientRawRequest = withRoutingAttribution(clientRawRequest, { ...clientRawRequest.routingAttribution, keyId });
   const keyAccessDenied = await enforceKeyAccess(keyAccess, modelStr);
   if (keyAccessDenied) return keyAccessDenied;
+
+  // One logical admission, after validation/access and before upstream/fallback.
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey, { admit: true, request, tokenBased: true });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
+
 
   // Bypass naming/warmup requests before combo rotation to avoid wasting rotation slots
   const userAgent = request?.headers?.get("user-agent") || "";

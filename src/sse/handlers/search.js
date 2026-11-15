@@ -4,7 +4,9 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  checkApiKeyQuota,
 } from "../services/auth.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleSearchCore } from "open-sse/handlers/search/index.js";
@@ -21,7 +23,11 @@ import { getKeyAccessContext, enforceKeyAccessProvider } from "../services/keyAc
  *
  * @param {Request} request
  */
-export async function handleSearch(request) {
+export function handleSearch(request) {
+  return withKeyRateLifecycle(request, () => handleSearchImpl(request));
+}
+
+async function handleSearchImpl(request) {
   let body;
   try {
     body = await request.json();
@@ -77,6 +83,8 @@ export async function handleSearch(request) {
   // restricted key needs the provider id (or the combo) on its list.
   const keyAccessDenied = await enforceKeyAccessProvider(await getKeyAccessContext(request), providerInput, comboModels);
   if (keyAccessDenied) return keyAccessDenied;
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey, { admit: true, request, tokenBased: false });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
   if (comboModels) {
     const comboStrategies = settings.comboStrategies || {};
     const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";

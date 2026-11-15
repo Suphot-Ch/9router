@@ -4,7 +4,9 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  checkApiKeyQuota,
 } from "../services/auth.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
@@ -21,7 +23,11 @@ import { saveRequestUsage } from "@/lib/usageDb.js";
  *
  * @param {Request} request
  */
-export async function handleSystemone(request) {
+export function handleSystemone(request) {
+  return withKeyRateLifecycle(request, () => handleSystemoneImpl(request));
+}
+
+async function handleSystemoneImpl(request) {
   let body;
   try {
     body = await request.json();
@@ -79,6 +85,8 @@ export async function handleSystemone(request) {
   // Per-key access control: checked before any credential lookup.
   const keyAccessDenied = await enforceKeyAccessResolved(await getKeyAccessContext(request), modelStr, provider, model);
   if (keyAccessDenied) return keyAccessDenied;
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey, { admit: true, request, tokenBased: true });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
 
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);

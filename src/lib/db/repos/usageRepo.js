@@ -3,6 +3,8 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { sanitizeRoutingAttribution } from "open-sse/utils/routingAttribution.js";
+import { accountKeyUsage } from "./keyAlertsRepo.js";
+import { recordKeyTokenUsage } from "@/sse/services/keyRateLimits.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -269,6 +271,8 @@ export async function saveRequestUsage(entry) {
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
 
     let inserted = false;
+    let savedEventId = null;
+    let savedKeyId = null;
 
     // History, attribution idempotency, daily upsert and lifetime counter are atomic.
     // better-sqlite3 is sync → no JS yield mid-transaction → no race in same process.
@@ -332,21 +336,19 @@ export async function saveRequestUsage(entry) {
       const cur = db.get(`SELECT value FROM _meta WHERE key = 'totalRequestsLifetime'`);
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
+      savedKeyId = accountKeyUsage(db, typeof entry.apiKey === 'string' ? entry.apiKey.trim() : null, { tokens: promptTokens + completionTokens, cost: entry.cost, costKnown: calculated.costKnown });
+      savedEventId = `usage:${saved.lastInsertRowid}`;
       inserted = true;
     });
 
     if (inserted) {
       pushToRing(entry);
       scheduleStatsEvent("update", 250);
-      // Per-key spending accounting: one atomic UPDATE, gated on the insert
-      // above so a deduped (already-counted) entry cannot double-count.
-      if (entry.apiKey && typeof entry.apiKey === "string") {
-        const totalTokens = promptTokens + completionTokens;
-        const cost = entry.cost || 0;
-        if (totalTokens > 0 || cost > 0) {
-          const { addApiKeyUsage } = await import("./apiKeysRepo.js");
-          await addApiKeyUsage(entry.apiKey.trim(), { tokens: totalTokens, cost });
-        }
+      // Only committed canonical events enter the minute controller. Never trust
+      // client attribution for the stable key ID and never store its raw secret.
+      if (savedKeyId) {
+        const hasUsage = entry.tokens && ['prompt_tokens','input_tokens','completion_tokens','output_tokens'].some(k => typeof entry.tokens[k] === 'number');
+        recordKeyTokenUsage(savedKeyId, hasUsage ? promptTokens + completionTokens : null, savedEventId, { estimated: entry.tokens?.estimated === true });
       }
     }
   } catch (e) {

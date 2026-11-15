@@ -63,6 +63,16 @@ describe("dashboard guard public LLM API access", () => {
     mocks.verifyDashboardAuthToken.mockResolvedValue(false);
   });
 
+  it.each(['/api/access-groups','/api/access-groups/group-id','/api/keys/alerts','/api/keys/alerts/alert-id','/api/keys/key-id/policy-status'])('protects governance %s with dashboard auth, never inference key auth', async (pathname) => {
+    mocks.validateApiKey.mockResolvedValue(true);
+    const remote=request(pathname,{host:'router.example.com',authorization:'Bearer inference-test'});
+    expect((await proxy(remote)).status).toBe(401);
+    expect(mocks.validateApiKey).not.toHaveBeenCalled();
+    remote.cookies.get=vi.fn(()=>({value:'dashboard-session'}));
+    mocks.verifyDashboardAuthToken.mockResolvedValue(true);
+    expect(await proxy(remote)).toBe(mocks.nextResponse);
+  });
+
   it("allows loopback public LLM API without API key", async () => {
     const response = await proxy(localRequest("/v1/chat/completions", { host: "localhost:20128" }));
 

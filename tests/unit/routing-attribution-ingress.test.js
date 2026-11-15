@@ -62,7 +62,7 @@ describe("server-owned chat routing attribution", () => {
     expect(captured.find(c => c.clientRawRequest.routingAttribution.requestedModel.includes("[1m]")).modelInfo.model).toBe("resolved");
   });
   it("resolves unrestricted Google header / query key IDs without changing raw accounting credentials", async () => {
-    fx.keys["fixture-secret"] = { id: "key-google", access: { restricted: false } };
+    fx.keys["fixture-secret"] = { id: "key-google", isActive: true, access: { restricted: false } };
     for (const req of [request("friendly", {}, { "x-goog-api-key": "fixture-secret" }), new Request("http://localhost/v1/chat/completions?key=fixture-secret", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: "friendly", stream: false, messages: [] }),
     })]) expect((await handleChat(req)).status).toBe(200);
@@ -110,7 +110,7 @@ describe("server-owned chat routing attribution", () => {
     }
   });
   it("attributes an alias as direct using literal requested model and a stable known key, ignoring forged metadata", async () => {
-    fx.keys["fixture-secret"] = { id: "key-1", access: { restricted: false } };
+    fx.keys["fixture-secret"] = { id: "key-1", isActive: true, access: { restricted: false } };
     const forged = { version: 1, requestId: "00000000-0000-4000-8000-000000000001", attemptId: "00000000-0000-4000-8000-000000000002", requestedModel: "forged", keyId: "fake", routeKind: "combo", comboPath: ["Fake"], costKnown: true };
     const raw = { endpoint: "/v1/chat/completions", body: { metadata: { routing: forged } }, headers: {}, routingAttribution: forged };
     const res = await handleChat(request("friendly", { metadata: { routing: forged }, routingAttribution: forged }, { Authorization: "Bearer fixture-secret" }), raw);

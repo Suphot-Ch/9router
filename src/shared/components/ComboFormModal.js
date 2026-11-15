@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import Modal from "./Modal";
 import Input from "./Input";
 import Button from "./Button";
 import ModelSelectModal from "./ModelSelectModal";
+import { parseComboContext } from "@/shared/utils/comboContextClient";
 
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 
@@ -57,6 +58,13 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
     : "";
   const [name, setName] = useState(initialName);
   const [models, setModels] = useState(combo?.models || []);
+  const [contextDraft, setContextDraft] = useState(combo?.contextLength == null ? "" : String(combo.contextLength));
+  const contextId = useId();
+  const context = parseComboContext(contextDraft);
+  const [outputDraft, setOutputDraft] = useState(combo?.maxOutputTokens == null ? "" : String(combo.maxOutputTokens));
+  const outputId = useId();
+  const output = parseComboContext(outputDraft);
+  const [saveError, setSaveError] = useState("");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -100,10 +108,16 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
   };
 
   const handleSave = async () => {
-    if (!validateName(name)) return;
+    if (!validateName(name) || context.error || output.error || saving) return;
+    setSaveError("");
     setSaving(true);
-    await onSave({ name: forcePrefix + name.trim(), models });
-    setSaving(false);
+    try {
+      await onSave({ name: forcePrefix + name.trim(), models, contextLength: context.value, maxOutputTokens: output.value });
+    } catch (error) {
+      setSaveError(error.message || "Failed to save combo. Please retry.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const isEdit = !!combo;
@@ -157,9 +171,26 @@ export default function ComboFormModal({ isOpen, combo, onClose, onSave, activeP
             </button>
           </div>
 
+          <div className="min-w-0">
+            <label htmlFor={contextId} className="mb-1.5 block text-sm font-medium">Context window (tokens)</label>
+            <Input id={contextId} aria-label="Context window (tokens)" value={contextDraft}
+              onChange={(e) => { setContextDraft(e.target.value); setSaveError(""); }} placeholder="Auto" inputMode="numeric"
+              aria-describedby={`${contextId}-help`} aria-invalid={!!context.error} error={context.error} disabled={saving} />
+            <p id={`${contextId}-help`} className="mt-1 text-xs text-text-muted">Leave blank for Auto. Custom context is client metadata only; it does not expand upstream capacity or change the output budget. Above the smallest seat limit, a fallback may reject the request.</p>
+          </div>
+
+          <div className="min-w-0">
+            <label htmlFor={outputId} className="mb-1.5 block text-sm font-medium">Max output (tokens)</label>
+            <Input id={outputId} aria-label="Max output (tokens)" value={outputDraft}
+              onChange={(e) => { setOutputDraft(e.target.value); setSaveError(""); }} placeholder="Auto" inputMode="numeric"
+              aria-describedby={`${outputId}-help`} aria-invalid={!!output.error} error={output.error} disabled={saving} />
+            <p id={`${outputId}-help`} className="mt-1 text-xs text-text-muted">Leave blank for Auto. Custom max output is independent client metadata; it does not expand upstream limits, inject request max_tokens, or truncate requests or responses.</p>
+          </div>
+
+          {saveError && <p role="alert" className="text-xs text-red-500">{saveError}</p>}
           <div className="flex flex-col gap-2 pt-1 sm:flex-row">
             <Button onClick={onClose} variant="ghost" fullWidth size="sm">Cancel</Button>
-            <Button onClick={handleSave} fullWidth size="sm" disabled={!name.trim() || !!nameError || saving}>
+            <Button onClick={handleSave} fullWidth size="sm" disabled={!name.trim() || !!nameError || !!context.error || !!output.error || saving}>
               {saving ? "Saving..." : isEdit ? "Save" : "Create"}
             </Button>
           </div>

@@ -4,7 +4,9 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  checkApiKeyQuota,
 } from "../services/auth.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings, getCombos } from "@/lib/localDb";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
@@ -22,7 +24,11 @@ import { assertPublicUrlResolved } from "@/shared/utils/ssrfGuard.js";
  *
  * @param {Request} request
  */
-export async function handleFetch(request) {
+export function handleFetch(request) {
+  return withKeyRateLifecycle(request, () => handleFetchImpl(request));
+}
+
+async function handleFetchImpl(request) {
   let body;
   try {
     body = await request.json();
@@ -97,6 +103,8 @@ export async function handleFetch(request) {
   // restricted key needs the provider id (or the combo) on its list.
   const keyAccessDenied = await enforceKeyAccessProvider(await getKeyAccessContext(request), providerInput, comboModels);
   if (keyAccessDenied) return keyAccessDenied;
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey, { admit: true, request, tokenBased: false });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
   if (comboModels) {
     const comboStrategies = settings.comboStrategies || {};
     const comboStrategy = comboStrategies[providerInput]?.fallbackStrategy || settings.comboStrategy || "fallback";

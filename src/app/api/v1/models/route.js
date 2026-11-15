@@ -309,8 +309,13 @@ function comboSeatLimits(combo, combosByName, visiting = new Set()) {
   }
 
   return {
-    contextWindow: Number.isFinite(contextWindow) ? contextWindow : undefined,
-    maxOutput: Number.isFinite(maxOutput) ? maxOutput : undefined,
+    // A configured value is advertised metadata, not an upstream capacity guarantee.
+    contextWindow: Number.isSafeInteger(combo?.contextLength) && combo.contextLength > 0
+      ? combo.contextLength
+      : Number.isFinite(contextWindow) ? contextWindow : undefined,
+    maxOutput: Number.isSafeInteger(combo?.maxOutputTokens) && combo.maxOutputTokens > 0
+      ? combo.maxOutputTokens
+      : Number.isFinite(maxOutput) ? maxOutput : undefined,
   };
 }
 
@@ -398,14 +403,23 @@ export async function buildModelsList(kindFilter, options = {}) {
       entry.kind = combo.kind;
     } else {
       const comboCaps = aggregateComboCapabilities(combo.models, comboByName, comboSeatCapabilities);
-      if (comboCaps) entry.capabilities = comboCaps;
-      // Any seat can serve the request, so the only window a combo can promise is
-      // its smallest. Combo entries were the only models on this endpoint that
-      // published no limits at all, which leaves a client to guess from the name —
-      // and it guesses high (see the snake_case note on the per-provider path).
+      if (comboCaps) {
+        entry.capabilities = { ...comboCaps };
+        // Limits below share one cycle-safe source, including nested overrides.
+        delete entry.capabilities.contextWindow;
+        delete entry.capabilities.maxOutput;
+      }
+      // Auto uses the recursive member minimum independently for each limit.
+      // Explicit values override client-facing metadata only, not upstream requests.
       const { contextWindow, maxOutput } = comboSeatLimits(combo, combosByName);
-      if (Number.isFinite(contextWindow)) entry.context_length = contextWindow;
-      if (Number.isFinite(maxOutput)) entry.max_completion_tokens = maxOutput;
+      if (Number.isFinite(contextWindow)) {
+        entry.context_length = contextWindow;
+        entry.capabilities = { ...entry.capabilities, contextWindow };
+      }
+      if (Number.isFinite(maxOutput)) {
+        entry.max_completion_tokens = maxOutput;
+        entry.capabilities = { ...entry.capabilities, maxOutput };
+      }
     }
     models.push(entry);
   }

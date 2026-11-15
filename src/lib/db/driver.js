@@ -101,6 +101,12 @@ async function initAdapter() {
 
   const { runMigrationOnce } = await import("./migrate.js");
   await runMigrationOnce(adapter);
+  // Recovery is independent of dashboard traffic. This synchronous scan uses
+  // only the migrated adapter, avoiding recursive initialization via getAdapter.
+  const { reconcileKeyAlerts } = await import('./repos/keyAlertsRepo.js');
+  adapter.transaction(() => {
+    for (const row of adapter.all('SELECT * FROM apiKeys')) reconcileKeyAlerts(adapter, row);
+  });
   return adapter;
 }
 

@@ -1,4 +1,7 @@
 import { handleChat } from "@/sse/handlers/chat.js";
+import { extractApiKey, checkApiKeyQuota } from "@/sse/services/auth.js";
+import { withKeyRateLifecycle } from "@/sse/services/keyRateLimits.js";
+import { errorResponse } from "open-sse/utils/error.js";
 import {
   clearAccountError,
   getProviderCredentials,
@@ -51,7 +54,11 @@ export async function OPTIONS() {
  * The upstream handleChat returns OpenAI SSE format; we transform it to
  * Gemini SSE format on the fly via transformOpenAISSEToGeminiSSE().
  */
-export async function POST(request, { params }) {
+export function POST(request, context) {
+  return withKeyRateLifecycle(request, () => postImpl(request, context));
+}
+
+async function postImpl(request, { params }) {
   await ensureInitialized();
 
   try {
@@ -125,14 +132,7 @@ export async function POST(request, { params }) {
 }
 
 function extractGeminiClientApiKey(request) {
-  const authHeader = request.headers.get("Authorization");
-  if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
-
-  const googleApiKey = request.headers.get("x-goog-api-key");
-  if (googleApiKey) return googleApiKey;
-
-  const url = new URL(request.url);
-  return url.searchParams.get("key");
+  return extractApiKey(request);
 }
 
 function normalizeGeminiNativeModel(model) {
@@ -249,6 +249,8 @@ async function forwardGeminiNativeRequest(request, body, model, action) {
   // so restricted keys are checked here, before any credential lookup.
   const keyAccessDenied = await enforceKeyAccessResolved(await getKeyAccessContext(request), model, "gemini", modelId);
   if (keyAccessDenied) return keyAccessDenied;
+  const denied = await checkApiKeyQuota(extractApiKey(request), (await getSettings()).requireApiKey, { admit: true, request, tokenBased: false });
+  if (denied) return errorResponse(denied.status, denied.error, denied.headers, denied.code);
   const excludeConnectionIds = new Set();
   const bodyText = JSON.stringify(body);
   let lastError = null;

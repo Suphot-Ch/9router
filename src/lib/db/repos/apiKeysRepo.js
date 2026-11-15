@@ -2,6 +2,9 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { keyAccessFromColumns, keyAccessToColumns } from "@/shared/utils/keyAccess.js";
 import { KEY_ACCESS_UNRESTRICTED } from "@/shared/constants/keyAccess.js";
+import { resolveKeyPolicy, keyPolicyFromRow, saveKeyPolicy } from "@/shared/utils/keyPolicy.js";
+import { requireAccessGroup } from "./accessGroupsRepo.js";
+import { accountKeyUsage, reconcileKeyAlerts } from "./keyAlertsRepo.js";
 import {
   RESET_MODES,
   DEFAULT_RESET_DAY,
@@ -45,6 +48,7 @@ function rowToKey(row) {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt || null,
     access: keyAccessFromColumns(row.accessRestricted, row.accessAllow),
+    ...keyPolicyFromRow(row),
   };
 }
 
@@ -124,7 +128,8 @@ export async function createApiKey(name, machineId, options = {}) {
   const result = generateApiKeyWithMachine(machineId);
   const now = new Date().toISOString();
   const { tokenLimit, costLimit, resetMode, resetDay } = resolveLimitFields(options || {});
-  const access = options?.access || KEY_ACCESS_UNRESTRICTED;
+  const policy = resolveKeyPolicy(options);
+  const access = policy.access || KEY_ACCESS_UNRESTRICTED;
   const apiKey = {
     id: uuidv4(),
     name,
@@ -144,6 +149,8 @@ export async function createApiKey(name, machineId, options = {}) {
     access,
   };
   const cols = keyAccessToColumns(access);
+  db.transaction(() => {
+  requireAccessGroup(db, policy);
   db.run(
     `INSERT INTO apiKeys(id, key, name, machineId, isActive, tokenLimit, costLimit, usedTokens, usedCost, resetMode, resetDay, lastResetAt, createdAt, updatedAt, accessRestricted, accessAllow) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
@@ -165,7 +172,10 @@ export async function createApiKey(name, machineId, options = {}) {
       cols.accessAllow,
     ]
   );
-  return apiKey;
+  saveKeyPolicy(db, apiKey.id, policy);
+  db.run('UPDATE apiKeys SET budgetEpochId=? WHERE id=?', [uuidv4(), apiKey.id]);
+  });
+  return rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [apiKey.id]));
 }
 
 export async function updateApiKey(id, data = {}) {
@@ -175,9 +185,11 @@ export async function updateApiKey(id, data = {}) {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
     const current = rowToKey(row);
+    const policy = resolveKeyPolicy(data, current);
+    if (data.accessGroupId !== undefined || data.accessMode !== undefined) requireAccessGroup(db, policy);
     const merged = { ...current, ...data };
     const { tokenLimit, costLimit, resetMode, resetDay } = resolveLimitFields(data, current);
-    const cols = keyAccessToColumns(merged.access || KEY_ACCESS_UNRESTRICTED);
+    const cols = keyAccessToColumns(policy.access || merged.access || KEY_ACCESS_UNRESTRICTED);
     const updatedAt = new Date().toISOString();
     db.run(
       `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, tokenLimit = ?, costLimit = ?, resetMode = ?, resetDay = ?, updatedAt = ?, accessRestricted = ?, accessAllow = ? WHERE id = ?`,
@@ -196,6 +208,11 @@ export async function updateApiKey(id, data = {}) {
         id,
       ]
     );
+    saveKeyPolicy(db, id, policy);
+    if (policy.alertsEnabled !== current.alertsEnabled || JSON.stringify(policy.alertThresholds) !== JSON.stringify(current.alertThresholds)) {
+      db.run('UPDATE apiKeys SET alertPolicyVersion=COALESCE(alertPolicyVersion,1)+1 WHERE id=?', [id]);
+    }
+    reconcileKeyAlerts(db, db.get('SELECT * FROM apiKeys WHERE id=?', [id]));
     result = rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
   });
   return result;
@@ -210,10 +227,12 @@ export async function resetApiKeyUsage(id, options = {}) {
   const db = await getAdapter();
   const now = new Date().toISOString();
   const lastResetAt = options.lastResetAt || now;
+  db.transaction(() => {
   db.run(
-    `UPDATE apiKeys SET usedTokens = 0, usedCost = 0, lastResetAt = ?, updatedAt = ? WHERE id = ?`,
-    [lastResetAt, now, id]
+    `UPDATE apiKeys SET usedTokens = 0, usedCost = 0, unknownCostCount = 0, budgetEpochId = ?, lastResetAt = ?, updatedAt = ? WHERE id = ?`,
+    [uuidv4(), lastResetAt, now, id]
   );
+  });
   return rowToKey(db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]));
 }
 
@@ -223,17 +242,14 @@ export async function resetApiKeyUsage(id, options = {}) {
  * @param {string} key - the raw API key value
  * @param {{tokens?: number, cost?: number}} usage
  */
-export async function addApiKeyUsage(key, { tokens = 0, cost = 0 } = {}) {
+export async function addApiKeyUsage(key, { tokens = 0, cost = 0, costKnown = true } = {}) {
   if (!key || typeof key !== "string") return;
   const t = Number(tokens) || 0;
   const c = Number(cost) || 0;
   if (!Number.isFinite(t) || !Number.isFinite(c)) return;
-  if (t <= 0 && c <= 0) return;
+  if (t <= 0 && c <= 0 && costKnown !== false) return;
   const db = await getAdapter();
-  db.run(
-    `UPDATE apiKeys SET usedTokens = COALESCE(usedTokens, 0) + ?, usedCost = COALESCE(usedCost, 0) + ?, updatedAt = ? WHERE key = ?`,
-    [t > 0 ? t : 0, c > 0 ? c : 0, new Date().toISOString(), key]
-  );
+  db.transaction(() => accountKeyUsage(db, key, { tokens: t, cost: c, costKnown }));
 }
 
 /**
@@ -243,10 +259,17 @@ export async function addApiKeyUsage(key, { tokens = 0, cost = 0 } = {}) {
  */
 export async function applyDueKeyReset(keyRecord, now = Date.now()) {
   if (!keyRecord) return keyRecord;
-  const boundary = getDueResetBoundary(keyRecord, now);
-  if (!boundary) return keyRecord;
-  const updated = await resetApiKeyUsage(keyRecord.id, { lastResetAt: boundary });
-  return updated || keyRecord;
+  const db = await getAdapter();
+  let current;
+  db.transaction(() => {
+    current = rowToKey(db.get('SELECT * FROM apiKeys WHERE id=?', [keyRecord.id]));
+    if (!current) return;
+    const boundary = getDueResetBoundary(current, now);
+    if (!boundary) return;
+    db.run('UPDATE apiKeys SET usedTokens=0,usedCost=0,unknownCostCount=0,budgetEpochId=?,lastResetAt=?,updatedAt=? WHERE id=?', [uuidv4(),boundary,new Date().toISOString(),current.id]);
+    current = rowToKey(db.get('SELECT * FROM apiKeys WHERE id=?', [current.id]));
+  });
+  return current || keyRecord;
 }
 
 export async function deleteApiKey(id) {

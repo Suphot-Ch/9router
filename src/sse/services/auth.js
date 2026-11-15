@@ -5,6 +5,8 @@ import { MAX_RATE_LIMIT_COOLDOWN_MS } from "open-sse/config/errorConfig.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
 import { getAntigravityQuotaCache, getAntigravityModelQuota } from "./antigravityQuota.js";
 import * as log from "../utils/logger.js";
+import { extractClientApiKey } from "./keyAccess.js";
+import { admitKeyRateLimit, attachKeyRateAdmission } from "./keyRateLimits.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -358,19 +360,7 @@ export async function clearAccountError(connectionId, currentConnection, model =
  * Extract API key from request headers
  */
 export function extractApiKey(request) {
-  // Check Authorization header first
-  const authHeader = request.headers.get("Authorization");
-  if (authHeader?.startsWith("Bearer ")) {
-    return authHeader.slice(7);
-  }
-
-  // Check Anthropic x-api-key header
-  const xApiKey = request.headers.get("x-api-key");
-  if (xApiKey) {
-    return xApiKey;
-  }
-
-  return null;
+  return extractClientApiKey(request);
 }
 
 /**
@@ -388,8 +378,8 @@ function formatQuotaNumber(value) {
 /**
  * Spending gate for an API key: per-key token and cost limits.
  *
- * Applied only to a KNOWN (existing, active) key — that is why an unknown key
- * keeps today's behaviour: rejected when keys are required, allowed in local
+ * Inactive known keys are always denied. An unknown key keeps existing
+ * behavior: rejected when keys are required, allowed in local
  * mode. Before comparing, a due lazy reset (resetMode none|monthly|weekly) is
  * applied so a new period starts with zeroed counters; no cron is involved.
  *
@@ -397,7 +387,7 @@ function formatQuotaNumber(value) {
  * @param {boolean} requireApiKey - settings.requireApiKey
  * @returns {Promise<{error: string, status: number, code: string} | null>} null = allowed
  */
-export async function checkApiKeyQuota(apiKey, requireApiKey = false) {
+export async function checkApiKeyQuota(apiKey, requireApiKey = false, options = {}) {
   if (!apiKey) {
     return requireApiKey
       ? { error: "Missing API key", status: 401, code: "missing_api_key" }
@@ -406,8 +396,9 @@ export async function checkApiKeyQuota(apiKey, requireApiKey = false) {
 
   const { getApiKeyByKey, applyDueKeyReset } = await import("@/lib/db/repos/apiKeysRepo.js");
   let keyRecord = await getApiKeyByKey(apiKey);
-  if (!keyRecord || !keyRecord.isActive) {
-    // Unknown or paused key: unchanged behaviour — 401 only when keys are required.
+  if (keyRecord && !keyRecord.isActive) return { error: "Inactive API key", status: 401, code: "inactive_api_key" };
+  if (!keyRecord) {
+    // Unknown keys retain optional local-mode behavior.
     return requireApiKey
       ? { error: "Invalid API key", status: 401, code: "invalid_api_key" }
       : null;
@@ -441,5 +432,13 @@ export async function checkApiKeyQuota(apiKey, requireApiKey = false) {
     };
   }
 
+  if (options.admit) {
+    if ((keyRecord.rpmLimit > 0 || keyRecord.tpmLimit > 0) && process.env.KEY_RATE_LIMIT_MODE !== "single-process") {
+      return { error: "Finite key rate limits require KEY_RATE_LIMIT_MODE=single-process and one serving process; distributed enforcement is unsupported", status: 503, code: "key_rate_configuration" };
+    }
+    const admission = admitKeyRateLimit(keyRecord, options);
+    if (!admission.allowed) return admission;
+    attachKeyRateAdmission(options.request, admission);
+  }
   return null;
 }

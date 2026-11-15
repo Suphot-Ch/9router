@@ -2,6 +2,7 @@ import {
   extractApiKey, isValidApiKey, checkApiKeyQuota,
   getProviderCredentials, markAccountUnavailable, clearAccountError,
 } from "../services/auth.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings, getCustomModels } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
@@ -37,7 +38,11 @@ async function resolveCustomModelTransport(provider, model) {
   }
 }
 
-export async function handleStt(request) {
+export function handleStt(request) {
+  return withKeyRateLifecycle(request, () => handleSttImpl(request));
+}
+
+async function handleSttImpl(request) {
   let formData;
   try {
     formData = await request.formData();
@@ -56,14 +61,6 @@ export async function handleStt(request) {
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
 
-  // Per-key spending limits: a known key is limited even in local mode;
-  // unknown keys keep the behaviour above. Before any routing work.
-  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey);
-  if (quotaDenied) {
-    log.warn("AUTH", `${quotaDenied.error} (key=${log.maskKey(apiKey)})`);
-    return errorResponse(quotaDenied.status, quotaDenied.error, null, quotaDenied.code);
-  }
-
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!formData.get("file")) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: file");
 
@@ -76,6 +73,11 @@ export async function handleStt(request) {
   // Per-key access control: checked before any credential lookup.
   const keyAccessDenied = await enforceKeyAccessResolved(await getKeyAccessContext(request), modelStr, provider, model);
   if (keyAccessDenied) return keyAccessDenied;
+
+  // One logical admission, after validation/access and before upstream/fallback.
+  const quotaDenied = await checkApiKeyQuota(apiKey, settings.requireApiKey, { admit: true, request, tokenBased: false });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
+
 
   log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
 

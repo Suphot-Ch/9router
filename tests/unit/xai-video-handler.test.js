@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const authMocks = vi.hoisted(() => ({
+  checkApiKeyQuota: async () => null,
   getProviderCredentials: vi.fn(),
   markAccountUnavailable: vi.fn(async () => ({ shouldFallback: true, cooldownMs: 0 })),
   clearAccountError: vi.fn(async () => {}),

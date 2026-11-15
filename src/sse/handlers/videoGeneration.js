@@ -4,7 +4,9 @@ import {
   clearAccountError,
   extractApiKey,
   isValidApiKey,
+  checkApiKeyQuota,
 } from "../services/auth.js";
+import { withKeyRateLifecycle } from "../services/keyRateLimits.js";
 import { getSettings, getProviderConnectionById } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
@@ -109,7 +111,11 @@ function withConnectionHeader(response, connectionId) {
 /**
  * POST /v1/videos/{generations|edits|extensions} — async job creation proxy.
  */
-export async function handleVideoCreate(request, action) {
+export function handleVideoCreate(request, action) {
+  return withKeyRateLifecycle(request, () => handleVideoCreateImpl(request, action));
+}
+
+async function handleVideoCreateImpl(request, action) {
   const authError = await requireValidApiKey(request);
   if (authError) return authError;
 
@@ -126,6 +132,8 @@ export async function handleVideoCreate(request, action) {
     await getKeyAccessContext(request), bodyInfo.parsed?.model ? String(bodyInfo.parsed.model) : "", provider, model
   );
   if (keyAccessDenied) return keyAccessDenied;
+  const quotaDenied = await checkApiKeyQuota(extractApiKey(request), (await getSettings()).requireApiKey, { admit: true, request, tokenBased: false });
+  if (quotaDenied) return errorResponse(quotaDenied.status, quotaDenied.error, quotaDenied.headers, quotaDenied.code);
 
   // Strip the provider prefix (e.g. "xai/grok-imagine-video") before forwarding;
   // otherwise forward the original bytes untouched.

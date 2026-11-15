@@ -1,3 +1,20 @@
+# v0.5.112-ch7-dev.4 — Development only
+
+- Extend per-Combo settings to both context window and maximum output tokens, independently Auto or Custom; persist and advertise both. Does not expand upstream capacity.
+
+# v0.5.112-ch7-dev.3 — Development only
+
+- Add per-Combo context-window override with Auto reset; persist ctx and advertise consistently to clients. Metadata only, not expanded upstream capacity.
+
+# v0.5.112-ch7-dev.2 — Development only
+
+- Separate Endpoint configuration into Keys and Group Settings tabs; keep per-key assignment apart from shared group/allow-model management. No production deployment.
+
+# v0.5.112-ch7-dev.1 — Development only
+
+- Implement per-key soft RPM/TPM, reusable access groups and budget alert inbox in isolated development. Not deployed; verification in TASK_PLAN.html.
+- Preserve original budgets, access semantics, usage accounting and production ch5.
+
 # v0.5.112-ch5 (2026-11-05)
 
 - Add a separate native Routing Map tab using real retained usage in Key → Direct/Combo → Provider → Model order; preserve existing Overview topology/animation and Details.
