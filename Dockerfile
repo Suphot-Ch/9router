@@ -31,7 +31,8 @@ RUN --mount=type=cache,target=/root/.npm \
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+# Bound the compiler heap on shared hosts; runtime does not inherit this.
+RUN NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
 # https://github.com/decolua/9router/issues/5245
 # wreq-js and playwright-core are lazy runtime dependencies (loaded by
