@@ -4,6 +4,7 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { sanitizeRoutingAttribution } from "open-sse/utils/routingAttribution.js";
 import { accountKeyUsage } from "./keyAlertsRepo.js";
+import { accountConnectionTokenUsage } from "./connectionTokenBudgetsRepo.js";
 import { recordKeyTokenUsage } from "@/sse/services/keyRateLimits.js";
 
 function maskApiKey(key) {
@@ -337,6 +338,9 @@ export async function saveRequestUsage(entry) {
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
       savedKeyId = accountKeyUsage(db, typeof entry.apiKey === 'string' ? entry.apiKey.trim() : null, { tokens: promptTokens + completionTokens, cost: entry.cost, costKnown: calculated.costKnown });
+      // Canonical per-account accounting shares history's duplicate guard and
+      // transaction. Raw totals retain missing/estimated coverage information.
+      accountConnectionTokenUsage(db, entry.connectionId, entry.tokens);
       savedEventId = `usage:${saved.lastInsertRowid}`;
       inserted = true;
     });

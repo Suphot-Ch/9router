@@ -117,12 +117,17 @@ export function formatDoneLine({ usage, latency }) {
 }
 
 export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, endpoint, routingAttribution, label = "USAGE", silent = false }) {
-  if (!tokens || typeof tokens !== "object") return;
+  const routing = sanitizeRoutingAttribution(routingAttribution);
+  const usage = tokens && typeof tokens === "object" && !Array.isArray(tokens) ? tokens : {};
+  const rawInput = usage.prompt_tokens ?? usage.input_tokens;
+  const rawOutput = usage.completion_tokens ?? usage.output_tokens;
+  const measured = usage.estimated !== true && [rawInput, rawOutput].every(value => Number.isSafeInteger(value) && value >= 0);
+  const inTokens = rawInput ?? 0;
+  const outTokens = rawOutput ?? 0;
 
-  const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
-  const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
-
-  if (inTokens === 0 && outTokens === 0) return;
+  // Record a completed account-bound attempt even if the provider omitted
+  // usage. The server attempt ID preserves idempotency for zero-token rows.
+  if (inTokens === 0 && outTokens === 0 && !(connectionId && routing && !measured)) return;
 
   if (!silent) {
     const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -132,12 +137,9 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
 
   // Canonicalize to one storage convention (prompt_tokens cache-inclusive) so
   // cached/cache-creation tokens survive to cost calc + stats. See canonicalizeUsage.
-  const normalized = canonicalizeUsage(tokens) || {
-    prompt_tokens: tokens.prompt_tokens ?? tokens.input_tokens ?? 0,
-    completion_tokens: tokens.completion_tokens ?? tokens.output_tokens ?? 0
-  };
+  const normalized = canonicalizeUsage(usage);
+  if (!measured) normalized.estimated = true;
 
-  const routing = sanitizeRoutingAttribution(routingAttribution);
   saveRequestUsage({
     provider: provider || "unknown",
     model: model || "unknown",

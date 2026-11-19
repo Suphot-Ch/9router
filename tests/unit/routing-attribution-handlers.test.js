@@ -69,6 +69,18 @@ describe("all four chat usage completion save paths", () => {
     expect(result.success).toBe(false);
     expect(fx.save).not.toHaveBeenCalled();
   });
+  it("preserves estimated and partial usage as unknown for account accounting", () => {
+    for (const tokens of [{prompt_tokens: 10, completion_tokens: 2, estimated: true}, {prompt_tokens: 10}]) {
+      saveUsageStats({provider:"openai",model:"fixture",tokens,connectionId:"account",silent:true});
+    }
+    expect(fx.save.mock.calls.map(([entry]) => entry.tokens.estimated)).toEqual([true,true]);
+  });
+  it("persists unknown usage for a completed account-bound attempt", () => {
+    const routingAttribution=raw("Missing usage").routingAttribution;
+    saveUsageStats({provider:"openai",model:"fixture",connectionId:"account",routingAttribution,silent:true});
+    expect(fx.save).toHaveBeenCalledOnce();
+    expect(fx.save.mock.calls[0][0]).toMatchObject({connectionId:"account",routingAttribution,tokens:{estimated:true}});
+  });
   it("canonicalizes cache tokens without copying untrusted extra attribution fields", () => {
     const attribution = raw("Cache").routingAttribution;
     saveUsageStats({ provider: "openai", model: "routing-fixture", tokens: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 20, cache_creation_input_tokens: 3 },

@@ -6,6 +6,9 @@ import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/c
 import PropTypes from "prop-types";
 import { Badge, Toggle, Tooltip } from "@/shared/components";
 import CooldownTimer from "./CooldownTimer";
+import ConnectionTokenBudgetModal from "./ConnectionTokenBudgetModal";
+import { connectionTokenBudgetStatus, resolveConnectionTokenBudget } from "@/shared/utils/connectionTokenBudget";
+import { formatTokens, getLimitUsage } from "@/shared/utils/keyLimits";
 
 export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMoveUp, onMoveDown, onToggleActive, onUpdateProxy, onEdit, onDelete, oneByOneStatus = null, autoPing = null, schedule = null }) {
   const [showProxyDropdown, setShowProxyDropdown] = useState(false);
@@ -13,6 +16,27 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
   const proxyDropdownRef = useRef(null);
   const proxyBtnRef = useRef(null);
   const [proxyDropdownStyle, setProxyDropdownStyle] = useState(null);
+  const [showTokenBudget, setShowTokenBudget] = useState(false);
+  const [tokenBudget, setTokenBudget] = useState(connection.tokenBudget ?? null);
+  const [tokenBudgetTick, setTokenBudgetTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    setTokenBudget(connection.tokenBudget ?? null);
+    setTokenBudgetTick(Date.now());
+  }, [connection.id, connection.tokenBudget]);
+  useEffect(() => {
+    if (!tokenBudget || tokenBudget.resetMode === "none") return;
+    const interval = setInterval(() => setTokenBudgetTick(Date.now()), 30_000);
+    return () => clearInterval(interval);
+  }, [tokenBudget]);
+  const budgetStatus = tokenBudget
+    ? connectionTokenBudgetStatus(resolveConnectionTokenBudget(tokenBudget, tokenBudgetTick), tokenBudgetTick)
+    : null;
+  const tokenUsage = getLimitUsage(budgetStatus?.usedTokens, budgetStatus?.tokenLimit);
+  const handleBudgetUpdated = (budget) => {
+    setTokenBudget(budget);
+    setTokenBudgetTick(Date.now());
+  };
 
   const proxyPoolMap = new Map((proxyPools || []).map((pool) => [pool.id, pool]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
@@ -183,6 +207,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
   };
 
   return (
+    <>
     <div className={`group flex min-w-0 flex-col gap-3 rounded-lg p-2 transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.02] sm:flex-row sm:items-center sm:justify-between ${connection.isActive === false ? "opacity-60" : ""}`}>
       <div className="flex min-w-0 flex-1 items-start gap-2 sm:items-center sm:gap-3">
         {/* Priority arrows */}
@@ -230,6 +255,7 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
                 {schedule.badge}
               </Badge>
             )}
+            {budgetStatus?.atLimit && <Badge variant="error" size="sm">Token limit reached</Badge>}
             {connection.lastError && connection.isActive !== false && (
               <span className="max-w-full truncate text-xs text-red-500 sm:max-w-[300px]" title={connection.lastError}>
                 {connection.lastError}
@@ -245,6 +271,17 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </Badge>
             )}
           </div>
+          {budgetStatus && (
+            <div className="mt-1 flex min-w-0 flex-col gap-1 text-xs text-text-muted" data-testid="connection-token-budget-summary">
+              <span className="break-words">Tokens: {formatTokens(tokenUsage.used)} / {tokenUsage.unlimited ? "Unlimited" : formatTokens(tokenUsage.limit)}</span>
+              {!tokenUsage.unlimited && (
+                <div role="progressbar" aria-label="Account token budget used" aria-valuemin={0} aria-valuemax={100} aria-valuenow={tokenUsage.usedPercent} className="h-1 w-full max-w-[200px] overflow-hidden rounded-full bg-surface-3">
+                  <div className={`h-full rounded-full ${tokenUsage.tone.bg}`} style={{ width: `${tokenUsage.usedPercent}%` }} />
+                </div>
+              )}
+              {budgetStatus.unknownUsageCount > 0 && <span className="break-words text-amber-600 dark:text-amber-400">{formatTokens(budgetStatus.unknownUsageCount)} requests with unknown usage</span>}
+            </div>
+          )}
           {hasAnyProxy && (
             <div className="mt-1 flex items-center gap-2 flex-wrap">
               <span className="max-w-full truncate text-[11px] text-text-muted sm:max-w-[420px]" title={proxyDisplayText}>
@@ -328,6 +365,15 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
               </button>
             </Tooltip>
           )}
+          <button
+            type="button"
+            aria-label="Token Limits"
+            onClick={() => setShowTokenBudget(true)}
+            className={`flex min-h-11 w-full flex-col items-center justify-center rounded px-2 py-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${tokenUsage.atLimit ? "text-red-500" : budgetStatus?.tokenLimit > 0 ? "text-primary" : "text-text-muted hover:text-primary"}`}
+          >
+            <span className="material-symbols-outlined text-[18px]">data_usage</span>
+            <span className="text-[10px] leading-tight">Token Limits</span>
+          </button>
           <button onClick={onEdit} className="flex flex-col items-center rounded px-2 py-1 text-text-muted hover:bg-black/5 hover:text-primary dark:hover:bg-white/5">
             <span className="material-symbols-outlined text-[18px]">edit</span>
             <span className="text-[10px] leading-tight">Edit</span>
@@ -345,6 +391,15 @@ export default function ConnectionRow({ connection, proxyPools, isOAuth, isFirst
         />
       </div>
     </div>
+      {showTokenBudget && (
+        <ConnectionTokenBudgetModal
+          isOpen={showTokenBudget}
+          onClose={() => setShowTokenBudget(false)}
+          connection={connection}
+          onUpdated={handleBudgetUpdated}
+        />
+      )}
+    </>
   );
 }
 
@@ -360,6 +415,7 @@ ConnectionRow.propTypes = {
     lastError: PropTypes.string,
     priority: PropTypes.number,
     globalPriority: PropTypes.number,
+    tokenBudget: PropTypes.object,
   }).isRequired,
   proxyPools: PropTypes.arrayOf(PropTypes.shape({
     id: PropTypes.string,

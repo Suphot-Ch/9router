@@ -34,6 +34,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     : (excludeConnectionIds ? new Set([excludeConnectionIds]) : new Set());
   const preferredConnectionId = options?.preferredConnectionId || null;
   const requestedModel = options?.requestedModel || model;
+  const videoStatus = options?.purpose === "video-status";
   // Acquire mutex to prevent race conditions
   const currentMutex = selectionMutex;
   let resolveMutex;
@@ -73,7 +74,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       };
     }
 
-    const connections = await getProviderConnections({ provider: providerId, isActive: true });
+    const activeConnections = await getProviderConnections({ provider: providerId, isActive: true });
+    const connections = videoStatus && preferredConnectionId
+      ? activeConnections.filter(c => c.id === preferredConnectionId)
+      : activeConnections;
     log.debug("AUTH", `${provider} | total connections: ${connections.length}, excludeIds: ${excludeSet.size > 0 ? [...excludeSet].join(",") : "none"}, model: ${model || "any"}`);
 
     if (connections.length === 0) {
@@ -85,9 +89,25 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const isAntigravity = providerId === "antigravity";
     const antigravityQuotaCache = isAntigravity && model ? getAntigravityQuotaCache() : null;
 
+    // Account budgets are independent of manual/scheduled activation. Re-read
+    // durable counters/reset state before selection; never flip isActive.
+    const budgetBlocked = new Map();
+    for (const c of connections) {
+      // Polling an existing job is not admission of new token work.
+      if (videoStatus || !c.tokenBudget || excludeSet.has(c.id)) continue;
+      try {
+        const { applyConnectionTokenBudget } = await import('@/lib/db/repos/connectionTokenBudgetsRepo.js');
+        const budget = await applyConnectionTokenBudget(c.id);
+        if (!budget || budget.atLimit) budgetBlocked.set(c.id, budget);
+      } catch {
+        // Configured budget storage unavailable: skip, not unlimited.
+        budgetBlocked.set(c.id, null);
+      }
+    }
+
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const availableConnections = connections.filter(c => {
-      if (excludeSet.has(c.id)) return false;
+      if (excludeSet.has(c.id) || budgetBlocked.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
@@ -115,6 +135,12 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     });
 
     if (availableConnections.length === 0) {
+      if (budgetBlocked.size) {
+        const retryAfter = [...budgetBlocked.values()].map(b => b?.nextResetAt).filter(Boolean).sort()[0] || null;
+        return { allRateLimited: true, accountTokenLimited: true,
+          retryAfter, retryAfterHuman: retryAfter ? formatRetryAfter(retryAfter) : 'until token budget reset',
+          lastError: 'Provider account token budget reached or unavailable', lastErrorCode: 429 };
+      }
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
       const expiries = lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);

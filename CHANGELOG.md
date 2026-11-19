@@ -1,3 +1,9 @@
+# v0.5.119-ch8 — Account token budgets
+
+- Do not charge estimated or missing chat usage to account limits; keep status polling pinned to the existing video job account even after its token budget is reached.
+
+- Add per-provider-account shared token budgets with reset cadence and independent routing gates, alongside Schedule. Unlimited by default; existing activation and schedules remain unchanged.
+
 # v0.5.119-ch7 — Production candidate
 
 - Bound production build memory/workers and run deployment builds as durable systemd jobs.
