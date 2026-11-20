@@ -1,0 +1,6 @@
+{
+  "providerAlias": "cx",
+  "id": "gpt-6.2-sol",
+  "type": "llm",
+  "name": "GPT 6.2 Sol"
+}

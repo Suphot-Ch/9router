@@ -1,0 +1,11 @@
+{
+  "codex": {
+    "gpt-6.2-sol": {
+      "input": 2,
+      "output": 10,
+      "cached": 0.1,
+      "reasoning": 2,
+      "cache_creation": 2
+    }
+  }
+}
